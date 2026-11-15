@@ -1,0 +1,127 @@
+# ─────────────────────────────────────────────
+#  Réglages de Jarvis — modifie, enregistre, puis « Redémarrer » dans le menu de l'icône.
+# ─────────────────────────────────────────────
+
+[general]
+nom = "Jarvis"
+# Phrase dite au démarrage (laisse vide pour démarrer en silence).
+phrase_demarrage = "Jarvis est prêt."
+# Lance la barre Givre (l'île en haut de l'écran) en même temps que Jarvis.
+lancer_givre = true
+# Chemin de Givre.exe (vide = cherché tout seul) et options de lancement.
+givre_exe = ""
+givre_arguments = "--ile"
+
+[micro]
+# Vide = micro par défaut de Windows. Sinon, un morceau de son nom (ex : "Razer").
+appareil = ""
+# Sensibilité du « Hey Jarvis » : 0.3 = réagit facilement, 0.8 = très strict.
+seuil_activation = 0.5
+# Secondes de silence qui terminent ta phrase (plus grand = tu peux faire des pauses en parlant).
+silence_fin = 1.4
+# Durée maximale d'une commande, en secondes.
+duree_max = 20
+# Secondes d'attente pour que tu commences à parler après « Hey Jarvis ».
+attente_debut = 6
+# Après sa réponse, Jarvis t'écoute encore ce nombre de secondes : tu peux continuer
+# à lui parler sans redire « Hey Jarvis ». 0 = désactivé.
+conversation = 5
+# Petit « ding » quand Jarvis t'écoute.
+ding = true
+# Dire « Hey Jarvis » pendant qu'il parle le coupe.
+interrompre = true
+
+[transcription]
+# Modèle Whisper : "large-v3-turbo" (précis), "small" (rapide, ou si pas de carte NVIDIA)…
+modele = "large-v3-turbo"
+# "auto" = carte graphique si possible, sinon processeur. Ou "cuda" / "cpu".
+appareil = "auto"
+precision = "float16"
+
+[voix]
+# La voix de Jarvis (change-la aussi dans le menu de l'icône, ou en disant « change de voix ») :
+#   "siwis_hd" : femme, la plus naturelle      "jarvis" : homme, accent anglais (expérimental)
+#   "tom"      : homme                         "pierre" : homme
+#   "jessica"  : femme                         "siwis"  : femme, rapide
+voix = "siwis_hd"
+# 1.0 = normal, 0.8 = plus rapide, 1.2 = plus lent.
+lenteur = 1.0
+volume = 1.0
+
+[cerveau]
+ollama_url = "http://127.0.0.1:11434"
+# qwen3.5:4b : rapide (≈0,3 s), léger (3,4 Go), sait déclencher des actions.
+modele = "qwen3.5:4b"
+# Nombre d'échanges dont Jarvis se souvient (voix + chat de l'île).
+historique = 3
+# Taille de la mémoire de travail du modèle (plus grand = plus de mémoire graphique).
+contexte = 8192
+# Durée pendant laquelle Ollama garde le modèle chargé. "0" = libère la carte graphique tout de suite.
+garder_en_memoire = "30m"
+# Créativité : 0 = sérieux et prévisible, 1 = fantaisiste.
+temperature = 0.4
+
+[givre]
+url = "http://127.0.0.1:47800"
+
+[serveur]
+# API locale de Jarvis (l'île Givre et l'extension Chrome s'y connectent).
+port = 47801
+
+[annonces]
+# Jarvis annonce à voix haute ce qui arrive.
+actif = true
+pronote = true
+mail = true
+discord = true
+minuteur = true
+# Pas d'annonces sur ce créneau (vide = jamais silencieux). Exemple : "22:00-07:00".
+ne_pas_deranger = ""
+# Lire à voix haute les réponses aux questions tapées dans l'île.
+lire_reponses_ile = false
+
+[discord]
+# Jarvis te relit le message et attend ton « oui » avant d'envoyer.
+confirmer_avant_envoi = true
+# Nombre de messages gardés en mémoire.
+memoire = 30
+
+[mise_a_jour]
+# Jarvis se met à jour tout seul depuis les « Releases » GitHub. Vide = le dépôt d'origine (fichier DEPOT).
+auto = true
+depot = ""
+verifier_toutes_les_heures = 6
+
+[deezer]
+# Ton numéro de profil Deezer, pour que « mets la playlist … » trouve d'abord TES playlists.
+# Il est dans l'adresse de ton profil : https://www.deezer.com/fr/profile/123456789 -> "123456789"
+# (ton profil doit être public). Vide = recherche dans tout Deezer.
+utilisateur = ""
+
+[meteo]
+# Seulement si Givre n'est pas lancé (sinon Jarvis prend la météo de Givre).
+ville = ""
+
+# Surnoms d'applications : ce que tu dis = nom dans le menu Démarrer.
+[applis]
+navigateur = "Google Chrome"
+internet = "Google Chrome"
+"bloc-notes" = "Bloc-notes"
+explorateur = "Explorateur de fichiers"
+"mes fichiers" = "Explorateur de fichiers"
+calculette = "Calculatrice"
+musique = "Spotify"
+roblox = "Roblox Player"
+
+# Sites ouverts par « ouvre … » quand aucune application ne porte ce nom.
+[sites]
+youtube = "https://www.youtube.com"
+gmail = "https://mail.google.com"
+outlook = "https://outlook.live.com/mail/"
+hotmail = "https://outlook.live.com/mail/"
+discord = "https://discord.com/app"
+netflix = "https://www.netflix.com"
+twitch = "https://www.twitch.tv"
+wikipedia = "https://fr.wikipedia.org"
+"google maps" = "https://www.google.com/maps"
+chatgpt = "https://chatgpt.com"

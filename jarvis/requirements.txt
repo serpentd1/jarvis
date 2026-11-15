@@ -1,0 +1,20 @@
+# Jarvis — dépendances Python (Python 3.12)
+numpy
+sounddevice          # micro et haut-parleurs
+openwakeword         # mot d'activation « Hey Jarvis »
+onnxruntime          # moteur pour openWakeWord
+faster-whisper       # parole -> texte (GPU)
+nvidia-cublas-cu12   # bibliothèques CUDA pour faster-whisper
+nvidia-cudnn-cu12==9.*
+piper-tts            # texte -> voix, en local (voix rapides)
+kokoro-onnx          # texte -> voix, plus naturel
+requests             # Ollama + lien avec Givre
+aiohttp              # API locale de Jarvis (île Givre + extension Chrome)
+pystray              # icône près de l'horloge
+pillow               # dessin de l'icône
+pycaw                # volume de Windows
+comtypes
+winrt-runtime        # contrôles média de Windows (pause, suivant… dans Chrome, Spotify)
+winrt-Windows.Media.Control
+winrt-Windows.Foundation
+winrt-Windows.Foundation.Collections

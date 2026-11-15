@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────────
+#  Dépôt GitHub : on ne publie QUE la barre Givre et Jarvis.
+#  Tout le reste de ce dossier (projets imprimante, secrets…) reste sur ce PC.
+# ─────────────────────────────────────────────────────────────
+/*
+!/.gitignore
+!/README.md
+!/givre/
+!/jarvis/
+
+# Secrets : jamais publiés
+google.json
+client_secret*.json
+*.ini
+
+# Fichiers fabriqués (recréés par les compilations et par l'installeur)
+target/
+target-test/
+dist/
+.venv/
+modeles/
+__pycache__/
+*.exe
+*.log
+graphify-out/
