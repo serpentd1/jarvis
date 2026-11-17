@@ -1,12 +1,15 @@
 """Paramètres de la grande application : voix, modèle d'IA, écoute, annonces, démarrage… (écrits dans config.toml).
-Et à la voix : « passe sur Whisper », « utilise Parakeet pour la transcription »."""
+Et à la voix : « passe sur Whisper », « utilise Parakeet pour la transcription », « quelle IA ? »."""
 import threading
 
 import requests
 
-from core import config, demarrage, stt
+from core import config, demarrage, ollama, stt
 from core.tts import CATALOGUE
 from . import Resultat, normaliser
+
+AUCUNE_IA = ("Aucune IA ne répond. Ouvre LM Studio, ou ajoute une clé gratuite : clic droit sur la barre, "
+             "Paramètres, IA.")
 
 # (section, clé, type, libellé) : ce que la grande application peut modifier
 REGLAGES = [
@@ -68,37 +71,28 @@ def installer(ctx, reg):
               r"|para ?[kcq]\w*|perak\w*)(?: pour (?:la transcription|m\W?ecouter|t\W?ecouter))?$",
               lambda m, t: [("changer_transcription", {"nom": m["nom"]})], priorite=15)
 
-    def modeles_ollama():
-        url = config.charger()["cerveau"]["ollama_url"].rstrip("/")
-        utilise = ctx.cfg["cerveau"]["modele"]
+    def quelle_ia():
+        """Quelle IA sert Jarvis, et lesquelles sont configurées (gratuites d'abord). Lit GET /ia/etat de la barre."""
         try:
-            charges = requests.get(f"{url}/api/ps", timeout=3).json().get("models", [])
-            installes = [m["name"] for m in requests.get(f"{url}/api/tags", timeout=3).json().get("models", [])]
+            etat = requests.get(f"{ollama.url_barre()}/ia/etat", timeout=3).json()
         except Exception:  # noqa: BLE001
-            return Resultat("Ollama ne répond pas : il n'est peut-être pas lancé.", ok=False)
+            return Resultat(AUCUNE_IA, ok=False)
+        configures = [f for f in etat.get("fournisseurs") or [] if f.get("cle") or (f.get("local") and f.get("on"))]
+        configures.sort(key=lambda f: not f.get("gratuit"))          # gratuites d'abord
+        actif = etat.get("actif")
+        if not actif and not configures:
+            return Resultat(AUCUNE_IA, ok=False)
+        phrase = f"Je me sers de {actif}." if actif else "Aucune IA n'est active en ce moment."
+        if configures:
+            liste = ", ".join(f"{f.get('nom')} ({'gratuit' if f.get('gratuit') else 'payant'})" for f in configures)
+            phrase += f" Tu as configuré : {liste}."
+        return Resultat(phrase)
 
-        def go(octets):
-            return f"{octets / 1e9:.1f} Go".replace(".", ",")
-
-        if charges:
-            details = []
-            for m in charges:
-                vram, total = m.get("size_vram", 0), m.get("size", 0) or 1
-                ou = "dans la carte graphique" if vram >= total * 0.95 else (
-                    "dans la mémoire du PC" if vram == 0 else f"{round(100 * vram / total)} % dans la carte graphique")
-                details.append(f"{m['name']} ({go(total)}, {ou})")
-            s = "s" if len(charges) > 1 else ""
-            phrase = f"{len(charges)} modèle{s} chargé{s} en ce moment : " + ", ".join(details) + "."
-        else:
-            phrase = "Aucun modèle n'est chargé en ce moment."
-        s = "s" if len(installes) > 1 else ""
-        return Resultat(f"{phrase} Tu en as {len(installes)} installé{s} : {', '.join(installes)}. "
-                        f"Moi, j'utilise {utilise}.")
-
-    reg.outil("modeles_ollama", "Dit quels modèles d'IA sont chargés dans Ollama (et où : carte graphique ou mémoire), "
-              "lesquels sont installés, et lequel Jarvis utilise.", {}, [], modeles_ollama)
-    reg.regle(r"\b(?:modeles?|ia)\b.*\b(?:charges?|installes?|ollama|olama)\b|\b(?:ollama|olama)\b.*\bmodeles?\b",
-              lambda m, t: [("modeles_ollama", {})], priorite=20)
+    reg.outil("quelle_ia", "Dit quelle IA Jarvis utilise en ce moment (LM Studio, Ollama, Google Gemini, OpenAI…) "
+              "et quelles IA sont configurées (clés d'API comprises).", {}, [], quelle_ia)
+    reg.regle(r"\bquel(?:le)? (?:ia|modele|service)\b|\blm ?studio\b|\blms\b|\b(?:ollama|olama)\b|"
+              r"\bcles? d'?api\b|\b(?:modeles?|ia)\b.*\b(?:charges?|installes?)\b",
+              lambda m, t: [("quelle_ia", {})], priorite=20)
 
     def api(methode, p):
         cfg = config.charger()
@@ -119,9 +113,11 @@ def installer(ctx, reg):
                 return {"ok": True, "redemarrer": True}
             return {"ok": True}
         try:
-            modeles = [m["name"] for m in requests.get(f"{cfg['cerveau']['ollama_url']}/api/tags", timeout=3).json()["models"]]
+            etat = requests.get(f"{ollama.url_barre()}/ia/etat", timeout=3).json()
+            modeles = list(dict.fromkeys(f["modele"] for f in etat.get("fournisseurs") or [] if f.get("modele")))
         except Exception:  # noqa: BLE001
-            modeles = [cfg["cerveau"]["modele"]]
+            modeles = []
+        modeles = modeles or [cfg["cerveau"]["modele"]]
         return {"ok": True, "voix": {"actuelle": ctx.voix_actuelle() if hasattr(ctx, "voix_actuelle") else None,
                                      "liste": [{"nom": n, "titre": v["titre"]} for n, v in CATALOGUE.items()]},
                 "modeles": modeles, "demarrage_windows": demarrage.est_active(),

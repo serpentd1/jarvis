@@ -16,6 +16,9 @@ DEFAUTS = {
               "volume_conversation": 350, "ding": True, "interrompre": True, "couper_en_parlant": True},
     "transcription": {"modele": "parakeet", "appareil": "auto", "precision": "float16"},
     "voix": {"voix": "siwis_hd", "modele": "", "lenteur": 1.0, "volume": 1.0},
+    # L'IA se choisit maintenant dans les réglages de la barre (clic droit, Paramètres, IA) : LM Studio sur le PC
+    # d'abord (gratuit), ou une clé d'API gratuite ou payante. ollama_url et modele ne servent plus qu'au
+    # cerveau de secours, si la barre est absente.
     "cerveau": {"ollama_url": "http://127.0.0.1:11434", "modele": "qwen3.5:4b", "modele_rapide": "", "historique": 3,
                 "contexte": 8192, "garder_en_memoire": "30m", "temperature": 0.4},
     "givre": {"url": "http://127.0.0.1:47802"},          # la barre de Jarvis (JarvisBarre.exe), pas Givre

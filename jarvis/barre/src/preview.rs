@@ -71,7 +71,7 @@ pub fn run(out: &str) {
     }
     let theme = Theme::new(true, cfg.accent, cfg.opacity);
     let pn = settings::PnInfo { connected: false, ..Default::default() };
-    let info = settings::Info { pn, edit: false, mem: sys::mem_text(), status: String::new(), acc: Default::default(), discord: String::new(), winnotif: String::new() };
+    let info = settings::Info { pn, ia: crate::ia::vue(), edit: false, mem: sys::mem_text(), status: String::new(), acc: Default::default(), discord: String::new(), winnotif: String::new() };
     for page in 0..5 {
         let mut st = Settings::new(std::ptr::null_mut());
         st.set_page(page);
@@ -132,7 +132,7 @@ pub fn run_ile(out: &str) {
         Notif { title: "Lucas".into(), body: "t'es chaud pour une game ce soir ?".into(), time: now - chrono::Duration::minutes(12) },
         Notif { title: "Inès (#maths)".into(), body: "quelqu'un a fait l'exo 4 p. 52 ? je comprends pas la question b".into(), time: now - chrono::Duration::minutes(3) },
     ];
-    d.accounts.ai = "Ollama est prêt avec le modèle qwen2.5:7b.".into();
+    d.accounts.ai = "En service : LM Studio · qwen2.5:7b.".into();
     let (sw, sh) = sys::screen_size();
     let dpi = sys::dpi();
     let bd = Backdrop::load(sw, sh, cfg.ile.blur_amount);

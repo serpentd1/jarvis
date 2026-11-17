@@ -22,9 +22,10 @@ MOTS_INUTILES = {"le", "la", "les", "l", "l'", "un", "une", "application", "appl
 PAS_UNE_APPLI = {"mail", "mails", "courrier", "boite mail", "pronote", "devoirs", "notes", "emploi du temps",
                  "agenda", "minuteur", "chrono", "chronometre", "alarme", "son", "volume", "video", "musique",
                  "pause", "lecture", "meteo", "messages", "message", "conversation"}
-# Ne jamais fermer : Windows, Jarvis lui-même, la barre, Ollama.
+# Ne jamais fermer : Windows, Jarvis lui-même, la barre, Ollama, LM Studio.
 PROTEGES = {"explorer", "svchost", "csrss", "winlogon", "wininit", "lsass", "services", "dwm", "system",
-            "python", "pythonw", "jarvis", "givre", "ollama", "ollama app", "taskmgr", "conhost"}
+            "python", "pythonw", "jarvis", "givre", "ollama", "ollama app", "lm studio", "lms", "lm-studio",
+            "taskmgr", "conhost"}
 
 
 class Index:

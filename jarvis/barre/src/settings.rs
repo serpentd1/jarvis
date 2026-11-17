@@ -12,7 +12,7 @@ pub const WIN_W: f32 = 860.0;
 pub const WIN_H: f32 = 600.0;
 const SIDE: f32 = 224.0;
 const TOP: f32 = 68.0;
-const PAGES: [&str; 5] = ["Apparence", "Widgets", "Agenda", "Comptes", "Général"];
+const PAGES: [&str; 6] = ["Apparence", "Widgets", "Agenda", "Comptes", "IA", "Général"];
 pub const ACCENTS: [[u8; 3]; 8] = [
     [52, 199, 89],
     [0, 199, 190],
@@ -74,8 +74,6 @@ pub enum F {
     DcWin,
     DcKeywords,
     DcPeople,
-    Model,
-    OllamaUrl,
     MsClient,
     DcId,
     DcSecret,
@@ -103,6 +101,17 @@ pub enum F {
     PnLogin,
     PnSync,
     PnDel,
+    /// Services d'IA : (position dans la liste) interrupteur, « En premier », « Retirer ».
+    IaOn(u8),
+    IaTop(u8),
+    IaDel(u8),
+    IaCle,
+    IaUrl,
+    IaModele,
+    IaChercher,
+    IaLmStudio,
+    IaGemini,
+    IaGroq,
 }
 
 #[derive(Clone, Copy)]
@@ -114,6 +123,8 @@ enum K {
     Swatch,
     Text(&'static str),
     Button(&'static str),
+    /// Un service d'IA : interrupteur, « En premier », « Retirer ».
+    Ia,
     Note,
 }
 
@@ -143,10 +154,13 @@ pub struct Info {
     pub acc: crate::data::AccountsInfo,
     pub discord: String,
     pub winnotif: String,
+    pub ia: crate::ia::Vue,
 }
 
 pub struct Settings {
     pub hwnd: HWND,
+    /// Dernier texte validé (Entrée) dans une case : sert à la clé d'API.
+    pub texte: String,
     page: usize,
     scroll: f32,
     rows: Vec<Row>,
@@ -171,6 +185,7 @@ impl Settings {
             edit: Vec::new(),
             caret: 0,
             drag: None,
+            texte: String::new(),
             buf: Vec::new(),
             size: (0, 0),
         }
@@ -322,8 +337,8 @@ fn get_t(c: &Config, f: F) -> String {
         F::Acad => c.countdown.academie.clone(),
         F::ExamName => c.countdown.exam_name.clone(),
         F::ExamDate => c.countdown.exam_date.clone(),
-        F::Model => c.mail.model.clone(),
-        F::OllamaUrl => c.mail.ollama_url.clone(),
+        F::IaUrl => crate::ia::adresse_saisie(),
+        F::IaModele => crate::ia::modele_premier(),
         F::MsClient => c.mail.ms_client.clone(),
         F::DcId => c.discord.id.clone(),
         F::DcSecret => c.discord.secret.clone(),
@@ -345,8 +360,8 @@ fn set_t(c: &mut Config, f: F, v: String) {
         F::Acad => c.countdown.academie = v,
         F::ExamName => c.countdown.exam_name = v,
         F::ExamDate => c.countdown.exam_date = v,
-        F::Model => c.mail.model = v,
-        F::OllamaUrl => c.mail.ollama_url = v,
+        F::IaUrl => crate::ia::regler_adresse(&v),
+        F::IaModele => crate::ia::regler_modele_premier(&v),
         F::MsClient => c.mail.ms_client = v,
         F::DcId => c.discord.id = v,
         F::DcSecret => c.discord.secret = v,
@@ -424,7 +439,6 @@ fn spec(page: usize, info: &Info) -> Vec<(K, Option<F>, String)> {
             b.row(K::Text("JJ/MM/AAAA"), F::ExamDate, "Date de l'examen");
             b.head("Mails");
             b.row(K::Toggle, F::MailOn, "Afficher les mails");
-            b.row(K::Toggle, F::AiOn, "Résumé et tri par l'IA locale (Ollama)");
             b.row(K::Toggle, F::NotifyMail, "Notification pour les mails urgents");
             b.head("Pronote");
             b.row(K::Toggle, F::PnNext, "Prochain cours");
@@ -495,10 +509,33 @@ fn spec(page: usize, info: &Info) -> Vec<(K, Option<F>, String)> {
             b.row(K::Text("ID d'application"), F::DcId, "ID d'application Discord");
             b.row(K::Text("Secret client"), F::DcSecret, "Secret client");
             b.row(K::Button("Autoriser"), F::DcAdd, "Connecter à Discord");
-            b.head("IA locale (Ollama)");
-            b.note(&a.ai);
-            b.row(K::Text("gemma3:4b"), F::Model, "Modèle");
-            b.row(K::Text("http://127.0.0.1:11434"), F::OllamaUrl, "Adresse d'Ollama (vide = par défaut)");
+        }
+        4 => {
+            b.head("Ce que Jarvis utilise");
+            b.note(&info.ia.en_service);
+            b.head("Gratuit (proposé en premier)");
+            for l in info.ia.lignes.iter().filter(|l| l.gratuit) {
+                b.row(K::Ia, F::IaOn(l.index), &format!("{} · {}", l.nom, l.detail));
+            }
+            b.row(K::Button("Chercher"), F::IaChercher, "Chercher les IA gratuites sur ce PC");
+            b.row(K::Button("Installer LM Studio"), F::IaLmStudio, "LM Studio : l'IA gratuite qui tourne sur ce PC");
+            b.row(K::Button("Clé Gemini gratuite"), F::IaGemini, "Clé gratuite Google Gemini (ouvre le site)");
+            b.row(K::Button("Clé Groq gratuite"), F::IaGroq, "Clé gratuite Groq (ouvre le site)");
+            b.head("Payant (facultatif)");
+            let payants: Vec<_> = info.ia.lignes.iter().filter(|l| !l.gratuit).collect();
+            if payants.is_empty() {
+                b.note("Aucun service payant pour l'instant. Ajoute une clé ci-dessous si tu en as une.");
+            }
+            for l in payants {
+                b.row(K::Ia, F::IaOn(l.index), &format!("{} · {}", l.nom, l.detail));
+            }
+            b.head("Ajouter une clé d'API");
+            b.note("Colle n'importe quelle clé (OpenAI, Anthropic, Groq, Gemini, OpenRouter…) : Jarvis devine le service et vérifie la clé. Elle est chiffrée et n'est plus affichée.");
+            b.row(K::Text("Coller la clé, puis Entrée"), F::IaCle, "Clé d'API");
+            b.row(K::Text("https://…/v1"), F::IaUrl, "Adresse du service (seulement pour une clé inconnue)");
+            b.row(K::Text("vide = automatique"), F::IaModele, "Modèle de l'IA en premier");
+            b.head("Mails");
+            b.row(K::Toggle, F::AiOn, "Résumé et tri des mails par l'IA");
         }
         _ => {
             b.head("Comportement");
@@ -628,6 +665,24 @@ fn control(c: &mut Ctx, st: &Settings, cfg: &Config, k: K, f: F, y: f32, info: &
                 let cx = bx + 10.0 + c.measure(Wt::Regular, 14.0, &pre).min(bw - 20.0);
                 c.line(cx, y + 14.0, cx, y + 32.0, 1.5, t.accent);
             }
+        }
+        K::Ia => {
+            // ligne d'un service : interrupteur à droite, puis « En premier » et « Retirer »
+            let Some(l) = info.ia.lignes.iter().find(|l| F::IaOn(l.index) == f) else { return };
+            let tx = xr - 42.0;
+            c.rr(tx, y + 11.0, 42.0, 24.0, 12.0, if l.on { t.accent } else { t.fg.a(0.16) });
+            c.circle(if l.on { tx + 30.0 } else { tx + 12.0 }, y + 23.0, 10.0, WHITE);
+            let (bx, bw) = (xr - 236.0, 100.0);
+            if l.premier {
+                c.rr(bx, y + 8.0, bw, 30.0, 8.0, t.accent);
+                c.text_c(Wt::Semibold, 13.0, bx + bw / 2.0, y + 27.5, WHITE, "Premier");
+            } else {
+                c.rr(bx, y + 8.0, bw, 30.0, 8.0, t.fg.a(0.09));
+                c.text_c(Wt::Semibold, 13.0, bx + bw / 2.0, y + 27.5, t.fg, "En premier");
+            }
+            let (dx, dw) = (xr - 128.0, 74.0);
+            c.rr(dx, y + 8.0, dw, 30.0, 8.0, t.fg.a(0.09));
+            c.text_c(Wt::Semibold, 13.0, dx + dw / 2.0, y + 27.5, t.fg, "Retirer");
         }
         K::Button(l) => {
             let l = if f == F::Edit && info.edit { "Terminer" } else { l };
@@ -761,6 +816,7 @@ pub fn commit(st: &mut Settings, cfg: &mut Config) -> Option<F> {
     let f = st.focus.take()?;
     let s = st.edit.iter().collect::<String>().trim().to_string();
     st.edit.clear();
+    st.texte = s.clone();
     if s != get_t(cfg, f) {
         set_t(cfg, f, s);
         Some(f)
@@ -832,6 +888,18 @@ pub fn down(st: &mut Settings, cfg: &mut Config, x: f32, y: f32) -> Vec<F> {
                 st.edit = get_t(cfg, f).chars().collect();
             }
             st.caret = st.edit.len();
+        }
+        K::Ia => {
+            if let F::IaOn(i) = f {
+                // la zone de droite : interrupteur ; au milieu : « En premier » ; à gauche de « Retirer » : « Retirer »
+                if x >= XR - 42.0 {
+                    out.push(F::IaOn(i));
+                } else if (XR - 236.0..XR - 136.0).contains(&x) {
+                    out.push(F::IaTop(i));
+                } else if (XR - 128.0..XR - 54.0).contains(&x) {
+                    out.push(F::IaDel(i));
+                }
+            }
         }
         K::Button(_) => {
             if x >= XR - 170.0 {

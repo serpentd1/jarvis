@@ -2,7 +2,7 @@
 //!
 //! 1. Réponse à un « tu confirmes ? » en attente (oui / non).
 //! 2. Raccourcis instantanés, sans IA (ceux des modules Python tant qu'ils existent, sinon ceux de pouvoirs.rs).
-//! 3. Sinon l'IA locale (Ollama) : elle choisit des outils, on les exécute VRAIMENT, et on dit ce qui a été fait.
+//! 3. Sinon l'IA (ia.rs : LM Studio, Ollama, ou une clé d'API) : elle choisit des outils, on les exécute VRAIMENT, et on dit ce qui a été fait.
 //!    - seuls les outils utiles à la question lui sont proposés (plus rapide, moins d'erreurs) ;
 //!    - quand il n'y a pas d'action à faire, la réponse arrive phrase par phrase (Jarvis parle plus tôt) ;
 //!    - elle n'a pas le droit de dire « c'est fait » sans avoir appelé d'outil.
@@ -12,7 +12,6 @@
 //! marche seul avec les outils de la barre (pouvoirs sur le PC, téléphone, minuteurs, alarme…).
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
 use std::sync::mpsc::channel;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -23,6 +22,7 @@ use serde_json::{Value, json};
 
 use crate::api::ApiReq;
 use crate::data::{Msg, Out};
+use crate::ia::{self, Echec, Requete};
 use crate::jarvis_link;
 use crate::pouvoirs::{self, Sortie};
 
@@ -35,9 +35,7 @@ const ATTENTE_VALIDE: Duration = Duration::from_secs(180);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reglages {
-    pub url: String,
-    pub modele: String,
-    /// Petit modèle rapide pour les ordres (vide = le même modèle pour tout).
+    /// Petit modèle des ordres : sert seulement au service Ollama (voir ia.rs).
     pub modele_rapide: String,
     pub temperature: f32,
     pub contexte: u32,
@@ -49,27 +47,17 @@ pub struct Reglages {
 
 impl Default for Reglages {
     fn default() -> Self {
-        Reglages {
-            url: "http://127.0.0.1:11434".into(),
-            modele: "qwen3.5:4b".into(),
-            modele_rapide: String::new(),
-            temperature: 0.4,
-            contexte: 8192,
-            garder: "30m".into(),
-            nom: "Jarvis".into(),
-            historique: 3,
-        }
+        Reglages { modele_rapide: String::new(), temperature: 0.4, contexte: 8192, garder: "30m".into(), nom: "Jarvis".into(), historique: 3 }
     }
 }
 
 impl Reglages {
-    /// Réglages envoyés par la voix (section [cerveau] de config.toml).
+    /// Réglages envoyés par la voix (section [cerveau] de config.toml). Les anciennes clés « ollama_url » et « modele »
+    /// ne choisissent plus le service : c'est ia.bin (fenêtre Paramètres, IA) qui décide.
     pub fn depuis_json(v: &Value) -> Option<Reglages> {
         let d = Reglages::default();
         let s = |k: &str, def: &str| v[k].as_str().map(str::trim).filter(|x| !x.is_empty()).unwrap_or(def).to_string();
         v.is_object().then(|| Reglages {
-            url: s("ollama_url", &d.url).trim_end_matches('/').to_string(),
-            modele: s("modele", &d.modele),
             modele_rapide: v["modele_rapide"].as_str().unwrap_or("").trim().to_string(),
             temperature: v["temperature"].as_f64().unwrap_or(d.temperature as f64) as f32,
             contexte: v["contexte"].as_u64().unwrap_or(d.contexte as u64) as u32,
@@ -209,7 +197,7 @@ fn nettoyer(texte: &str) -> String {
 }
 
 /// Ce qu'on peut déjà montrer d'une réponse en cours : rien de ce qui est dans <think>…</think>.
-fn visible(texte: &str) -> String {
+pub fn visible(texte: &str) -> String {
     let mut t = texte.to_string();
     loop {
         match (t.find("<think>"), t.find("</think>")) {
@@ -533,135 +521,20 @@ pub fn completer_chemins(appels: &mut [(String, Value)], n: &str) {
     }
 }
 
-// ───────────────────────── Ollama ─────────────────────────
+// ───────────────────────── l'IA (ia.rs) ─────────────────────────
 
-struct Retour {
-    contenu: String,
-    appels: Vec<(String, Value)>,
-}
-
-enum Echec {
-    Injoignable,
-    Autre(String),
-}
-
-fn ollama_repond(url: &str) -> bool {
-    ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build().get(&format!("{url}/api/version")).call().is_ok()
-}
-
-/// Ollama ne répond pas : on le lance et on attend qu'il soit prêt (20 s au plus).
-fn lancer_ollama(url: &str) -> bool {
-    if ollama_repond(url) {
-        return true;
+/// Prépare une demande à l'IA avec les réglages du cerveau.
+fn requete(messages: &[Value], outils: &[Value], max_mots: u32, rapide: bool, reg: &Reglages) -> Requete {
+    Requete {
+        messages: messages.to_vec(),
+        outils: outils.to_vec(),
+        max_mots,
+        temperature: reg.temperature,
+        json: false,
+        rapide,
+        contexte: reg.contexte,
+        garder: reg.garder.clone(),
     }
-    let appli = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default()).join("Programs").join("Ollama").join("ollama app.exe");
-    if !appli.is_file() {
-        return false;
-    }
-    crate::sys::log("cerveau : Ollama ne répond pas, je le lance");
-    if std::process::Command::new(&appli).spawn().is_err() {
-        return false;
-    }
-    let fin = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < fin {
-        std::thread::sleep(Duration::from_secs(1));
-        if ollama_repond(url) {
-            return true;
-        }
-    }
-    false
-}
-
-fn lire_appels(message: &Value, appels: &mut Vec<(String, Value)>) {
-    for c in message["tool_calls"].as_array().into_iter().flatten() {
-        let nom = c["function"]["name"].as_str().unwrap_or("").to_string();
-        let args = match &c["function"]["arguments"] {
-            Value::Object(o) => Value::Object(o.clone()),
-            Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({})),
-            _ => json!({}),
-        };
-        if !nom.is_empty() {
-            appels.push((nom, args));
-        }
-    }
-}
-
-/// Un appel à Ollama. `flux` : appelé pour chaque phrase terminée (réponse en direct) ; s'il renvoie
-/// false, on arrête de lire.
-fn ollama(reg: &Reglages, modele: &str, messages: &[Value], outils: &[Value], max_mots: u32, mut flux: Option<&mut dyn FnMut(&str) -> bool>) -> Result<Retour, Echec> {
-    let mut corps = json!({
-        "model": modele, "messages": messages, "stream": flux.is_some(), "think": false, "keep_alive": reg.garder,
-        "options": {"temperature": reg.temperature, "num_ctx": reg.contexte, "num_predict": max_mots},
-    });
-    if !outils.is_empty() {
-        corps["tools"] = Value::Array(outils.to_vec());
-    }
-    let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(3)).timeout(Duration::from_secs(120)).build();
-    let url = format!("{}/api/chat", reg.url);
-    let mut relance = false;
-    for _ in 0..4 {
-        let rep = match agent.post(&url).send_json(&corps) {
-            Ok(r) => r,
-            Err(ureq::Error::Status(400, r)) => {
-                let t = r.into_string().unwrap_or_default().to_lowercase();
-                if corps.get("tools").is_some() && t.contains("tool") {
-                    crate::sys::log(&format!("cerveau : le modèle {modele} ne sait pas utiliser d'outils"));
-                    if let Some(o) = corps.as_object_mut() {
-                        o.remove("tools");
-                    }
-                    continue;
-                }
-                if corps.get("think").is_some() && t.contains("think") {
-                    if let Some(o) = corps.as_object_mut() {
-                        o.remove("think");
-                    }
-                    continue;
-                }
-                return Err(Echec::Autre(t));
-            }
-            Err(ureq::Error::Status(c, r)) => return Err(Echec::Autre(format!("{c} {}", r.into_string().unwrap_or_default()))),
-            Err(ureq::Error::Transport(_)) => {
-                if !relance && lancer_ollama(&reg.url) {
-                    relance = true;
-                    continue;
-                }
-                return Err(Echec::Injoignable);
-            }
-        };
-        let mut retour = Retour { contenu: String::new(), appels: Vec::new() };
-        if flux.is_none() {
-            let v: Value = rep.into_json().map_err(|e| Echec::Autre(e.to_string()))?;
-            retour.contenu = v["message"]["content"].as_str().unwrap_or("").to_string();
-            lire_appels(&v["message"], &mut retour.appels);
-            crate::sys::log(&format!("cerveau : {modele}, {} outils proposés, {} jetons lus", outils.len(), v["prompt_eval_count"].as_u64().unwrap_or(0)));
-            return Ok(retour);
-        }
-        let (mut brut, mut vu) = (String::new(), 0usize);
-        for ligne in BufReader::new(rep.into_reader()).lines() {
-            let Ok(ligne) = ligne else { break };
-            let Ok(v) = serde_json::from_str::<Value>(&ligne) else { continue };
-            brut.push_str(v["message"]["content"].as_str().unwrap_or(""));
-            lire_appels(&v["message"], &mut retour.appels);
-            let fini = v["done"].as_bool() == Some(true);
-            let montrable = visible(&brut);
-            let (phrases, suite) = phrases_pretes(&montrable, vu.min(montrable.len()), fini);
-            vu = suite;
-            if let Some(f) = flux.as_mut() {
-                for p in phrases {
-                    if !f(&p) {
-                        retour.contenu = brut;
-                        return Ok(retour);
-                    }
-                }
-            }
-            if fini {
-                break;
-            }
-        }
-        retour.contenu = brut;
-        return Ok(retour);
-    }
-    Err(Echec::Autre("Ollama refuse la demande".into()))
 }
 
 // ───────────────────────── le cerveau ─────────────────────────
@@ -699,6 +572,7 @@ fn rep(texte: impl Into<String>, suivi: bool) -> Rep {
 pub fn repondre(d: Demande, sur_phrase: &mut dyn FnMut(&str)) -> Rep {
     if let Some(r) = &d.reglages {
         avec(|e| e.reg_voix = Some(r.clone()));
+        ia::rapide_ollama(&r.modele_rapide);
     }
     let reg = avec(|e| if d.python { e.reg_voix.clone().unwrap_or_else(|| e.reg.clone()) } else { e.reg.clone() });
     let texte = enlever_mot_activation(&d.texte);
@@ -791,7 +665,6 @@ explication que s'il te le demande."
     let connus: Vec<String> = tous.iter().map(|o| nom_outil(o).to_string()).collect();
     let action = est_action(n);
     let choisis = if action { choisir(&tous, n, &avec(|e| e.derniers.clone())) } else { Vec::new() };
-    let modele = if action && !reg.modele_rapide.is_empty() { reg.modele_rapide.clone() } else { reg.modele.clone() };
     let filtrer = |appels: Vec<(String, Value)>| -> Vec<(String, Value)> {
         let (bons, inconnus): (Vec<_>, Vec<_>) = appels.into_iter().partition(|a| connus.contains(&a.0));
         if !inconnus.is_empty() {
@@ -800,9 +673,9 @@ explication que s'il te le demande."
         bons
     };
     let echec = |e: Echec| match e {
-        Echec::Injoignable => rep("Je n'arrive pas à joindre Ollama, mon cerveau. Vérifie qu'il est bien lancé.", false),
+        Echec::Injoignable => rep("Je n'arrive à joindre aucune IA. Ouvre LM Studio, ou ajoute une clé gratuite : clic droit sur la barre, Paramètres, IA.", false),
         Echec::Autre(t) => {
-            crate::sys::log(&format!("cerveau : Ollama a répondu une erreur : {t}"));
+            crate::sys::log(&format!("cerveau : l'IA a répondu une erreur : {t}"));
             rep("J'ai eu un souci pour réfléchir à ça, désolé.", false)
         }
     };
@@ -823,9 +696,9 @@ explication que s'il te le demande."
             dit.push_str(p);
             true
         };
-        ollama(reg, &modele, &messages, &[], 300, Some(&mut f as &mut dyn FnMut(&str) -> bool))
+        ia::discuter(&requete(&messages, &[], 300, action, reg), Some(&mut f as &mut dyn FnMut(&str) -> bool))
     } else {
-        ollama(reg, &modele, &messages, &choisis, 300, None)
+        ia::discuter(&requete(&messages, &choisis, 300, action, reg), None)
     };
     let r = match premier {
         Ok(r) => r,
@@ -837,7 +710,7 @@ explication que s'il te le demande."
     // L'IA dit qu'elle ne sait pas faire alors qu'on ne lui a pas montré tous les outils : on les lui montre tous.
     if appels.is_empty() && !choisis.is_empty() && choisis.len() < tous.len() && dit_ne_pas_savoir(&normaliser(&contenu)) {
         crate::sys::log("cerveau : outil peut-être manquant, je redemande avec tous les outils");
-        if let Ok(r2) = ollama(reg, &modele, &messages, &tous, 300, None) {
+        if let Ok(r2) = ia::discuter(&requete(&messages, &tous, 300, action, reg), None) {
             let a2 = filtrer(r2.appels);
             if !a2.is_empty() {
                 appels = a2;
@@ -847,7 +720,7 @@ explication que s'il te le demande."
     }
     // Rien d'utilisable : on redemande une vraie réponse, sans outils.
     if appels.is_empty() && contenu.is_empty() && !menti {
-        if let Ok(r2) = ollama(reg, &reg.modele, &messages, &[], 300, None) {
+        if let Ok(r2) = ia::discuter(&requete(&messages, &[], 300, false, reg), None) {
             contenu = nettoyer(&r2.contenu);
         }
     }
@@ -859,7 +732,7 @@ explication que s'il te le demande."
         relance.push(json!({"role": "system", "content": "ATTENTION : tu n'as appelé AUCUN outil, donc rien n'a été fait. \
 Si l'utilisateur demande une action, appelle maintenant l'outil adapté. Sinon, dis-lui honnêtement que tu n'as rien fait."}));
         let pour_relance = if choisis.is_empty() { choisir(&tous, n, &[]) } else { choisis.clone() };
-        match ollama(reg, &modele, &relance, &pour_relance, 300, None) {
+        match ia::discuter(&requete(&relance, &pour_relance, 300, action, reg), None) {
             Ok(r2) => {
                 appels = filtrer(r2.appels);
                 contenu = nettoyer(&r2.contenu);
@@ -1087,16 +960,16 @@ mod tests {
 
     #[test]
     fn reglages_de_la_voix() {
-        let r = Reglages::depuis_json(&json!({"ollama_url": "http://127.0.0.1:11434/", "modele": "qwen3-vl", "historique": 5, "temperature": 0.2})).unwrap();
-        assert_eq!((r.url.as_str(), r.modele.as_str(), r.historique), ("http://127.0.0.1:11434", "qwen3-vl", 5));
-        assert!(r.modele_rapide.is_empty());
+        // « ollama_url » et « modele » sont ignorés : le service est choisi dans ia.bin
+        let r = Reglages::depuis_json(&json!({"ollama_url": "http://127.0.0.1:11434/", "modele": "qwen3-vl", "historique": 5, "temperature": 0.2, "modele_rapide": "qwen3-4b"})).unwrap();
+        assert_eq!((r.historique, r.temperature, r.modele_rapide.as_str()), (5, 0.2, "qwen3-4b"));
         assert!(Reglages::depuis_json(&json!(null)).is_none());
     }
 
     #[test]
     fn appels_d_outils_lus() {
         let mut a = Vec::new();
-        lire_appels(&json!({"tool_calls": [{"function": {"name": "lancer_minuteur", "arguments": {"duree": "5 minutes"}}}, {"function": {"name": "x", "arguments": "{\"a\":1}"}}]}), &mut a);
+        ia::lire_appels(&json!({"tool_calls": [{"function": {"name": "lancer_minuteur", "arguments": {"duree": "5 minutes"}}}, {"function": {"name": "x", "arguments": "{\"a\":1}"}}]}), &mut a);
         assert_eq!(a, vec![("lancer_minuteur".to_string(), json!({"duree": "5 minutes"})), ("x".to_string(), json!({"a": 1}))]);
         assert_eq!(duree_parlee(5400), "1 heure 30 minutes");
         assert_eq!(duree_parlee(45), "45 secondes");

@@ -1,4 +1,4 @@
-//! Comptes : coffre chiffré, Google (Agenda + Gmail), Microsoft (Hotmail), IA locale (Ollama).
+//! Comptes : coffre chiffré, Google (Agenda + Gmail), Microsoft (Hotmail), tri des mails par l'IA (ia.rs).
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -764,79 +764,30 @@ fn rule_cat(m: &Mail) -> Cat {
     }
 }
 
-/// Adresse d'Ollama : vide = ce PC ; on accepte « localhost:11434 » sans « http:// » et on retire le « / » final.
-fn ollama_base(url: &str) -> String {
-    let u = url.trim().trim_end_matches('/');
-    if u.is_empty() {
-        "http://127.0.0.1:11434".into()
-    } else if u.starts_with("http://") || u.starts_with("https://") {
-        u.into()
-    } else {
-        format!("http://{u}")
-    }
-}
-
-/// État de l'IA locale (affiché dans les paramètres).
-/// Question posée à Ollama par l'île ou par Jarvis : historique court + consigne avec les données du moment.
-/// Si le modèle demandé n'est pas installé, on prend le modèle de secours (celui des réglages mails).
-pub fn ollama_ask(r: &crate::brain::AskReq) -> Result<String, String> {
-    let base = ollama_base(&r.url);
-    let installed: Vec<String> = ureq::AgentBuilder::new()
-        .timeout(StdDur::from_secs(3))
-        .build()
-        .get(&format!("{base}/api/tags"))
-        .call()
-        .ok()
-        .and_then(|x| x.into_json::<Value>().ok())
-        .map(|v| v["models"].as_array().into_iter().flatten().filter_map(|m| m["name"].as_str().map(String::from)).collect())
-        .unwrap_or_default();
-    let has = |m: &str| !m.is_empty() && installed.iter().any(|n| n == m || (!m.contains(':') && n.split(':').next() == Some(m)));
-    let model = if has(&r.model) || installed.is_empty() {
-        r.model.clone()
-    } else if has(&r.fallback) {
-        r.fallback.clone()
-    } else {
-        installed.first().cloned().unwrap_or_else(|| r.model.clone())
-    };
+/// Question posée à l'IA par l'île ou par Jarvis : historique court + consigne avec les données du moment.
+/// Passe par ia.rs : LM Studio, Ollama, ou une clé d'API selon ce qui répond.
+pub fn ia_ask(r: &crate::brain::AskReq) -> Result<String, String> {
     let mut msgs = vec![json!({"role": "system", "content": r.system})];
     for (q, a) in &r.history {
         msgs.push(json!({"role": "user", "content": q}));
         msgs.push(json!({"role": "assistant", "content": a}));
     }
     msgs.push(json!({"role": "user", "content": r.question}));
-    let mut body = json!({
-        "model": model, "stream": false, "keep_alive": "10m", "think": false,
-        "options": {"temperature": r.temp, "num_ctx": 8192},
-        "messages": msgs
-    });
-    if r.json {
-        body["format"] = json!("json");
-    }
-    let ag = ureq::AgentBuilder::new().timeout_connect(StdDur::from_secs(4)).timeout(StdDur::from_secs(120)).build();
-    let v: Value = ag
-        .post(&format!("{base}/api/chat"))
-        .send_json(body)
-        .map_err(|e| ollama_err(e, &model, &base).0)?
-        .into_json()
-        .map_err(|e| e.to_string())?;
-    let a = crate::jarvis_link::strip_think(v["message"]["content"].as_str().unwrap_or(""));
-    if a.is_empty() { Err("Ollama n'a rien répondu.".into()) } else { Ok(a) }
-}
-
-fn ollama_status(model: &str, url: &str) -> String {
-    let base_url = ollama_base(url);
-    let ag = ureq::AgentBuilder::new().timeout(StdDur::from_secs(3)).build();
-    let Some(v) = ag.get(&format!("{base_url}/api/tags")).call().ok().and_then(|r| r.into_json::<Value>().ok()) else {
-        return format!("Ollama ne répond pas à {base_url} (pas installé ou pas lancé : ollama.com). En attendant, Jarvis trie les mails avec des règles simples.");
+    let req = crate::ia::Requete {
+        messages: msgs,
+        outils: Vec::new(),
+        max_mots: 800,
+        temperature: r.temp,
+        json: r.json,
+        rapide: false,
+        contexte: 8192,
+        garder: "10m".into(),
     };
-    let base = model.split(':').next().unwrap_or(model);
-    let has = v["models"].as_array().into_iter().flatten().any(|m| {
-        m["name"].as_str().is_some_and(|n| n == model || (!model.contains(':') && n.split(':').next() == Some(base)))
-    });
-    if has {
-        format!("Ollama est prêt avec le modèle {model}.")
-    } else {
-        format!("Ollama est lancé, mais il manque le modèle : dans un terminal, tape « ollama pull {model} ».")
+    match crate::ia::discuter(&req, None) {
+        Ok(x) if !x.contenu.trim().is_empty() => Ok(x.contenu),
+        Ok(_) => Err("L'IA n'a rien répondu.".into()),
+        Err(crate::ia::Echec::Injoignable) => Err("Aucune IA ne répond. Ouvre LM Studio, ou ajoute une clé gratuite (Paramètres, IA).".into()),
+        Err(crate::ia::Echec::Autre(t)) => Err(format!("L'IA a répondu une erreur : {t}")),
     }
 }
 
@@ -882,19 +833,9 @@ fn parse_reply(content: &str, n: usize) -> Result<(String, HashMap<usize, Cat>),
     Ok((resume, cats))
 }
 
-/// Erreur d'Ollama expliquée simplement. `true` = Ollama injoignable (on réessaiera à la prochaine synchro).
-fn ollama_err(e: ureq::Error, model: &str, base: &str) -> (String, bool) {
-    match e {
-        ureq::Error::Transport(_) => (format!("Ollama ne répond pas ({base}). Lance-le pour activer le tri par l'IA."), true),
-        ureq::Error::Status(404, _) => (format!("Le modèle {model} n'est pas installé : « ollama pull {model} »."), false),
-        e => (http_err(e), false),
-    }
-}
-
-/// Demande à l'IA locale un résumé + une catégorie par mail. Le modèle est déchargé juste après.
-/// En cas d'échec : (message simple, Ollama injoignable ?).
-fn summarize(model: &str, url: &str, mails: &[Mail]) -> Result<(String, HashMap<usize, Cat>), (String, bool)> {
-    let base = ollama_base(url);
+/// Demande à l'IA un résumé + une catégorie par mail (via ia.rs, en JSON). Renvoie aussi, en cas d'échec,
+/// si aucune IA ne répond (on réessaiera à la prochaine synchro).
+fn summarize(mails: &[Mail]) -> Result<(String, HashMap<usize, Cat>), (String, bool)> {
     let list = mails
         .iter()
         .enumerate()
@@ -916,29 +857,25 @@ Mets exactement un élément dans « mails » pour chaque mail, avec son numéro
 - \"spam\" : arnaque, hameçonnage, expéditeur louche, gain ou cadeau inattendu.\n\
 En cas de doute entre deux catégories, choisis la moins alarmante. Le résumé parle seulement des mails \"important\" et \"repondre\" ; \
 s'il n'y en a aucun, écris que rien n'est urgent.";
-    let body = json!({
-        "model": model, "stream": false, "format": "json", "keep_alive": 0,
-        "options": {"temperature": 0.1},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": list}
-        ]
-    });
-    let ag = ureq::AgentBuilder::new().timeout_connect(StdDur::from_secs(4)).timeout(StdDur::from_secs(240)).build();
-    let r: Value = ag
-        .post(&format!("{base}/api/chat"))
-        .send_json(body)
-        .map_err(|e| ollama_err(e, model, &base))?
-        .into_json()
-        .map_err(|e| (e.to_string(), false))?;
-    let content = r["message"]["content"].as_str().unwrap_or("{}");
-    parse_reply(content, mails.len()).map_err(|e| (e, false))
+    let req = crate::ia::Requete {
+        messages: vec![json!({"role": "system", "content": system}), json!({"role": "user", "content": list})],
+        outils: Vec::new(),
+        max_mots: 800,
+        temperature: 0.1,
+        json: true,
+        rapide: true,
+        contexte: 8192,
+        garder: "0".into(),
+    };
+    match crate::ia::discuter(&req, None) {
+        Ok(x) => parse_reply(&x.contenu, mails.len()).map_err(|e| (e, false)),
+        Err(crate::ia::Echec::Injoignable) => Err(("Aucune IA ne répond. Ouvre LM Studio, ou ajoute une clé gratuite (Paramètres, IA).".into(), true)),
+        Err(crate::ia::Echec::Autre(t)) => Err((t, false)),
+    }
 }
 
 pub struct SyncCfg {
     pub ms_client: String,
-    pub model: String,
-    pub ollama_url: String,
     pub ai: bool,
 }
 
@@ -953,13 +890,13 @@ pub struct State {
     primed: bool,
 }
 
-pub fn info(vault: &Mutex<Secrets>, model: &str, url: &str) -> AccountsInfo {
+pub fn info(vault: &Mutex<Secrets>) -> AccountsInfo {
     let s = vault.lock().unwrap().clone();
     AccountsInfo {
         google: s.google.iter().map(|a| a.email.clone()).collect(),
         ms: s.ms.map(|a| a.email),
         google_json: google_client().is_some(),
-        ai: ollama_status(model, url),
+        ai: crate::ia::texte_etat(),
     }
 }
 
@@ -1032,16 +969,16 @@ pub fn sync(ag: &ureq::Agent, vault: &Mutex<Secrets>, st: &mut State, cfg: &Sync
             st.last_error.clear();
             // les mails au-delà du 20e ne sont pas envoyés à l'IA : ils gardent le tri par règles
             let n = mails.len().min(20);
-            match summarize(&cfg.model, &cfg.ollama_url, &mails[..n]) {
+            match summarize(&mails[..n]) {
                 Ok((sum, cats)) => {
                     st.last_summary = sum;
                     st.last_cats = cats.iter().filter_map(|(i, c)| mails.get(*i).map(|m| (m.id.clone(), *c))).collect();
                 }
                 Err((e, down)) => {
-                    sys::log(&format!("ollama : {e}"));
+                    sys::log(&format!("ia : {e}"));
                     st.last_error = e;
                     if down {
-                        st.last_key.clear(); // Ollama éteint : on réessaiera à la prochaine synchro
+                        st.last_key.clear(); // aucune IA ne répond : on réessaiera à la prochaine synchro
                     }
                 }
             }
@@ -1083,12 +1020,5 @@ mod tests_ia {
         assert_eq!(c.get(&2), Some(&Cat::Important));
         assert!(parse_reply("pas du json", 3).is_err());
         assert!(parse_reply("{}", 3).is_err());
-    }
-
-    #[test]
-    fn adresse_ollama() {
-        assert_eq!(ollama_base(""), "http://127.0.0.1:11434");
-        assert_eq!(ollama_base(" localhost:11434/ "), "http://localhost:11434");
-        assert_eq!(ollama_base("https://x.fr"), "https://x.fr");
     }
 }

@@ -18,7 +18,10 @@ static JOURNAL: Mutex<String> = Mutex::new(String::new());
 static CHARGE: &[u8] = include_bytes!(env!("JARVIS_CHARGE"));
 const SANS_FENETRE: u32 = 0x0800_0000;
 const DETACHE: u32 = 0x0000_0008 | 0x0000_0200;
-const MODELE_DEFAUT: &str = "qwen3.5:4b";
+/// Petit modèle téléchargé avec `lms get` (≈ 2,5 Go).
+const MODELE_IA: &str = "qwen3-4b";
+const PAS_LENT: &str = "PC trop lent ou pas de place ? Tu peux aussi coller une clé gratuite (Google Gemini ou Groq) \
+dans les réglages de Jarvis : clic droit sur la barre, Paramètres, IA.";
 const CLE_DESINSTALLATION: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Jarvis";
 const CLE_DEMARRAGE: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -27,7 +30,7 @@ pub struct Options {
     pub dossier: PathBuf,
     pub demarrage: bool,
     pub bureau: bool,
-    pub ollama: bool,
+    pub lmstudio: bool,
     pub raccourcis: bool,
     pub auto: bool,
     pub relancer: bool,
@@ -40,7 +43,7 @@ impl Options {
             dossier: base.join("Programs").join("Jarvis"),
             demarrage: true,
             bureau: true,
-            ollama: true,
+            lmstudio: true,
             raccourcis: true,
             auto: false,
             relancer: false,
@@ -138,22 +141,21 @@ fn etapes(o: &Options) -> Result<(), String> {
     etat("Modèles de voix et d'écoute (≈ 1,7 Go)");
     executer(d.join(r".venv\Scripts\python.exe"), &[r"outils\telecharger_modeles.py"], d, 450, 700)?;
 
-    etat("Moteur d'IA (Ollama)");
+    etat("Moteur d'IA (LM Studio, gratuit)");
     progres(700);
-    let ollama = match trouver_ollama() {
-        Some(o) => Some(o),
-        None if o.ollama => Some(installer_ollama()?),
-        None => None,
-    };
-    match ollama {
-        Some(exe) => {
-            attendre_ollama(&exe)?;
-            let modele = lire_modele(d).unwrap_or_else(|| MODELE_DEFAUT.to_string());
-            etat(format!("Modèle d'IA {modele} (≈ 3,4 Go)"));
-            executer(&exe, &["pull", &modele], d, 760, 960)?;
-        }
-        None => journal("Ollama n'est pas installé : installe-le depuis https://ollama.com/download, puis relance l'installeur."),
+    if trouver_lms().is_none() && o.lmstudio {
+        installer_lmstudio(d);
     }
+    match trouver_lms() {
+        Some(lms) => {
+            etat(format!("Modèle d'IA {MODELE_IA} (≈ 2,5 Go)"));
+            if let Err(e) = executer(&lms, &["get", MODELE_IA, "--yes"], d, 760, 960) {
+                journal(format!("Le modèle n'a pas pu être téléchargé ({e}). Ouvre LM Studio et télécharge Qwen3 4B à la main."));
+            }
+        }
+        None => journal("LM Studio n'est pas encore prêt. Ouvre LM Studio une fois, puis télécharge un modèle (par exemple Qwen3 4B)."),
+    }
+    journal(PAS_LENT);
 
     if o.raccourcis {
         etat("Raccourcis et menu Démarrer");
@@ -360,63 +362,35 @@ fn trouver_ou_installer_uv(d: &Path) -> Result<PathBuf, String> {
     if uv.is_file() { Ok(uv) } else { Err("uv introuvable après téléchargement".into()) }
 }
 
-fn trouver_ollama() -> Option<PathBuf> {
-    if reussit("ollama", &["--version"]) {
-        return Some(PathBuf::from("ollama"));
-    }
-    let exe = PathBuf::from(std::env::var("LOCALAPPDATA").ok()?).join(r"Programs\Ollama\ollama.exe");
+/// lms.exe de LM Studio : il apparaît quand LM Studio a été ouvert une fois.
+fn trouver_lms() -> Option<PathBuf> {
+    let exe = PathBuf::from(std::env::var("USERPROFILE").ok()?).join(r".lmstudio\bin\lms.exe");
     exe.is_file().then_some(exe)
 }
 
-fn installer_ollama() -> Result<PathBuf, String> {
-    etat("Installation d'Ollama (≈ 1 Go à télécharger)");
-    let setup = std::env::temp_dir().join("OllamaSetup.exe");
-    telecharger("https://ollama.com/download/OllamaSetup.exe", &setup)?;
-    journal("Installation d'Ollama : une petite fenêtre d'Ollama peut s'afficher, c'est normal.");
-    let ok = Command::new(&setup)
-        .args(["/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"])
-        .status()
-        .is_ok_and(|s| s.success());
-    let _ = std::fs::remove_file(&setup);
-    if !ok {
-        return Err("l'installation d'Ollama a échoué : installe-le depuis https://ollama.com/download".into());
-    }
-    trouver_ollama().ok_or_else(|| "Ollama introuvable après installation".into())
-}
-
-fn attendre_ollama(exe: &Path) -> Result<(), String> {
-    let pret = || reussit(&exe.to_string_lossy(), &["list"]);
-    if pret() {
-        return Ok(());
-    }
-    let appli = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default()).join(r"Programs\Ollama\ollama app.exe");
-    if appli.is_file() {
-        let _ = Command::new(&appli).creation_flags(DETACHE).spawn();
+/// Installe LM Studio avec winget. Si ça échoue, on ouvre la page de téléchargement et on explique quoi faire.
+fn installer_lmstudio(d: &Path) {
+    etat("Installation de LM Studio (le moteur d'IA, gratuit)");
+    let ok = executer(
+        "winget",
+        &["install", "--id", "ElementLabs.LMStudio", "-e", "--silent",
+          "--accept-package-agreements", "--accept-source-agreements"],
+        d,
+        700,
+        740,
+    );
+    if ok.is_err() {
+        journal("L'installation automatique de LM Studio n'a pas marché. Je t'ouvre la page de téléchargement : \
+installe LM Studio, puis ouvre-le une fois.");
+        let _ = Command::new("explorer.exe")
+            .arg("https://lmstudio.ai/download")
+            .creation_flags(SANS_FENETRE)
+            .spawn();
     } else {
-        let _ = Command::new(exe).arg("serve").creation_flags(SANS_FENETRE | DETACHE).spawn();
+        journal("LM Studio est installé. Il faut l'ouvrir une fois pour que son outil `lms` soit prêt.");
     }
-    for _ in 0..40 {
-        std::thread::sleep(Duration::from_secs(1));
-        if pret() {
-            return Ok(());
-        }
-    }
-    Err("Ollama ne démarre pas : lance-le à la main (icône du lama), puis relance l'installeur".into())
 }
 
-/// Le modèle d'IA choisi dans config.toml (section [cerveau]).
-fn lire_modele(d: &Path) -> Option<String> {
-    let texte = std::fs::read_to_string(d.join("config.toml")).ok()?;
-    let mut dans_cerveau = false;
-    for ligne in texte.lines().map(str::trim) {
-        if ligne.starts_with('[') {
-            dans_cerveau = ligne == "[cerveau]";
-        } else if dans_cerveau && ligne.starts_with("modele") {
-            return ligne.split('"').nth(1).map(str::to_string);
-        }
-    }
-    None
-}
 
 fn raccourcis(d: &Path, o: &Options) -> Result<(), String> {
     let exe = d.join("Jarvis.exe");
@@ -519,7 +493,7 @@ pub fn desinstaller() {
         return;
     }
     if boite(
-        "Désinstaller Jarvis et sa barre ?\n\n(Ollama, ses modèles et tes réglages sont gardés.)",
+        "Désinstaller Jarvis et sa barre ?\n\n(LM Studio, ses modèles et tes réglages sont gardés.)",
         MB_YESNO | MB_ICONQUESTION,
     ) != IDYES
     {

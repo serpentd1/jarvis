@@ -1,4 +1,4 @@
-//! Le « cerveau » de l'île : l'IA locale (Ollama) avec un historique court, un résumé à jour
+//! Le « cerveau » de l'île : l'IA (ia.rs : LM Studio, Ollama ou une clé d'API) avec un historique court, un résumé à jour
 //! des données (Pronote, mails, météo, minuteurs) et des actions qu'elle peut déclencher.
 
 use serde_json::Value;
@@ -21,9 +21,6 @@ pub enum AiAction {
 /// Requête envoyée au fil réseau.
 pub struct AskReq {
     pub id: u64,
-    pub model: String,
-    pub fallback: String,
-    pub url: String,
     pub system: String,
     pub history: Vec<(String, String)>,
     pub question: String,

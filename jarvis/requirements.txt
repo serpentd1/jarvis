@@ -12,7 +12,7 @@ nvidia-cublas-cu12   # bibliothèques CUDA pour faster-whisper
 nvidia-cudnn-cu12==9.*
 piper-tts            # texte -> voix, en local (voix rapides)
 kokoro-onnx          # texte -> voix, plus naturel
-requests             # Ollama + lien avec Givre
+requests             # lien avec la barre (l'IA : LM Studio, clé d'API…) + secours Ollama
 aiohttp              # API locale de Jarvis (île Givre + extension Chrome)
 pystray              # icône près de l'horloge
 pillow               # dessin de l'icône

@@ -83,8 +83,6 @@ type Action = Box<dyn FnOnce() -> Sortie + Send>;
 
 struct Etat {
     cfg: PouvoirsCfg,
-    ollama_url: String,
-    modele: String,
     attente: HashMap<u64, (Instant, Action)>,
     suivant: u64,
 }
@@ -97,25 +95,15 @@ fn avec<R>(f: impl FnOnce(&mut Etat) -> R) -> R {
     let mut g = ETAT.lock().unwrap_or_else(|e| e.into_inner());
     let e = g.get_or_insert_with(|| Etat {
         cfg: PouvoirsCfg::default(),
-        ollama_url: "http://127.0.0.1:11434".into(),
-        modele: "qwen3.5:4b".into(),
         attente: HashMap::new(),
         suivant: 0,
     });
     f(e)
 }
 
-/// Réglages + IA utilisée pour réécrire un fichier ou créer une page (appelé au démarrage et à chaque changement).
-pub fn regler(cfg: PouvoirsCfg, ollama_url: &str, modele: &str) {
-    avec(|e| {
-        e.cfg = cfg;
-        if !ollama_url.trim().is_empty() {
-            e.ollama_url = ollama_url.trim().trim_end_matches('/').to_string();
-        }
-        if !modele.trim().is_empty() && !modele.starts_with('(') {
-            e.modele = modele.trim().to_string();
-        }
-    });
+/// Réglages des pouvoirs (appelé au démarrage et à chaque changement). L'IA est choisie dans ia.rs.
+pub fn regler(cfg: PouvoirsCfg) {
+    avec(|e| e.cfg = cfg);
 }
 
 fn cfg() -> PouvoirsCfg {
@@ -446,21 +434,23 @@ pub fn extraire_code(texte: &str) -> String {
     t.trim().to_string() + "\n"
 }
 
+/// Demande à l'IA (ia.rs : LM Studio, Ollama ou une clé d'API) de réécrire un fichier ou de créer une page.
 fn ia(systeme: &str, demande: &str) -> Result<String, String> {
-    let (url, modele) = avec(|e| (e.ollama_url.clone(), e.modele.clone()));
-    let corps = json!({"model": modele, "stream": false, "think": false,
-        "messages": [{"role": "system", "content": systeme}, {"role": "user", "content": demande}],
-        "options": {"temperature": 0.3, "num_predict": 8000, "num_ctx": 16384}});
-    let v: Value = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(3))
-        .timeout(Duration::from_secs(300))
-        .build()
-        .post(&format!("{url}/api/chat"))
-        .send_json(corps)
-        .map_err(|e| format!("Ollama : {e}"))?
-        .into_json()
-        .map_err(|e| e.to_string())?;
-    Ok(v["message"]["content"].as_str().unwrap_or("").to_string())
+    let req = crate::ia::Requete {
+        messages: vec![json!({"role": "system", "content": systeme}), json!({"role": "user", "content": demande})],
+        outils: Vec::new(),
+        max_mots: 8000,
+        temperature: 0.3,
+        json: false,
+        rapide: false,
+        contexte: 16384,
+        garder: "10m".into(),
+    };
+    match crate::ia::discuter(&req, None) {
+        Ok(x) => Ok(x.contenu),
+        Err(crate::ia::Echec::Injoignable) => Err("Je n'arrive à joindre aucune IA (LM Studio, Ollama ou une clé d'API).".into()),
+        Err(crate::ia::Echec::Autre(t)) => Err(format!("IA : {t}")),
+    }
 }
 
 fn nom(p: &Path) -> String {
@@ -1551,7 +1541,7 @@ mod tests {
     fn fichiers_avec_confirmations() {
         let d = std::env::temp_dir().join(format!("jarvis-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        regler(PouvoirsCfg { dossier_travail: d.display().to_string(), corbeille: false, ..Default::default() }, "", "");
+        regler(PouvoirsCfg { dossier_travail: d.display().to_string(), corbeille: false, ..Default::default() });
         // créer : tout de suite
         assert!(matches!(appeler("creer_fichier", &json!({"chemin_fichier": "a.txt", "contenu": "salut"})), Sortie::Fait(_)));
         assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "salut");
@@ -1581,9 +1571,9 @@ mod tests {
         assert!(matches!(appeler("creer_fichier", &json!({"chemin_fichier": "C:\\Windows\\jarvis.txt"})), Sortie::Refus(_)));
         assert!(matches!(appeler("supprimer", &json!({"chemin_element": "C:\\Program Files"})), Sortie::Refus(_)));
         // désactivé : tout est refusé
-        regler(PouvoirsCfg { actif: false, ..Default::default() }, "", "");
+        regler(PouvoirsCfg { actif: false, ..Default::default() });
         assert!(matches!(appeler("lister_dossier", &json!({})), Sortie::Refus(_)));
-        regler(PouvoirsCfg::default(), "", "");
+        regler(PouvoirsCfg::default());
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -250,6 +250,8 @@ class Cerveau:
     def prechauffer(self):
         """Charge le modèle en mémoire graphique en arrière-plan (sinon la 1re réponse prend ~20 s)."""
         def charger():
+            if ollama.barre_repond():          # la barre choisit l'IA (LM Studio, clé…) : rien à lancer ici
+                return
             if ollama.assurer_lance(self.cfg["ollama_url"]):
                 self._appel_ollama([{"role": "user", "content": "Bonjour"}], outils=True, max_mots=1)
                 log.info("Modèle %s prêt", self.cfg["modele"])
@@ -313,7 +315,8 @@ class Cerveau:
                     *self.historique, {"role": "user", "content": texte}]
         message = self._appel_ollama(messages, outils=bool(ACTION.search(normaliser(texte))))
         if message is None:
-            return Reponse("Je n'arrive pas à joindre Ollama, mon cerveau. Vérifie qu'il est bien lancé.")
+            return Reponse("Aucune IA ne répond. Ouvre LM Studio, ou ajoute une clé gratuite : clic droit sur la barre, "
+                           "Paramètres, IA.")
         appels = [(c["function"]["name"], c["function"].get("arguments") or {})
                   for c in message.get("tool_calls") or []]
         contenu = nettoyer(message.get("content", ""))

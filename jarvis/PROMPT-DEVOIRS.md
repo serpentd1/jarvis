@@ -10,7 +10,7 @@ Crée un **mode devoirs** dans Jarvis (dossier `jarvis/`), pour un collégien fr
 ## Contexte du projet (à vérifier dans le code avant de coder)
 
 - Jarvis est un assistant vocal local. Son cerveau est en Rust : `jarvis/barre/src/cerveau.rs` (IA locale
-  Ollama, outils, confirmations). Les outils Rust sont dans `jarvis/barre/src/pouvoirs.rs` (tableau `OUTILS`,
+  l'IA via la barre, route `/ia/discuter` ; outils, confirmations). Les outils Rust sont dans `jarvis/barre/src/pouvoirs.rs` (tableau `OUTILS`,
   fonction `appeler`, raccourcis vocaux dans `regles()`).
 - Les devoirs, les notes et les cours viennent de Pronote : `jarvis/barre/src/pronote.rs`, exposés par
   `GET http://127.0.0.1:47802/etat`.
@@ -51,7 +51,7 @@ Crée un **mode devoirs** dans Jarvis (dossier `jarvis/`), pour un collégien fr
 - Commence par me poser tes questions (une liste courte), puis propose un plan en étapes avant de coder.
 - Fais une étape à la fois, avec des tests `cargo test` : création d'un QCM à partir d'une fausse réponse
   d'IA, correction des réponses « A/B/C/D » et en toutes lettres, calcul de la note, répétition espacée.
-- Demande le QCM à Ollama en JSON strict (`format: json`), puis vérifie-le : 4 choix différents, une bonne
+- Demande le QCM à l'IA en JSON strict (`json: true` sur la route `/ia/discuter` de la barre), puis vérifie-le : 4 choix différents, une bonne
   réponse qui existe, pas de question en double. Un QCM invalide est redemandé une fois ; sinon Jarvis dit
   qu'il n'y arrive pas.
 - À la fin de chaque étape, dis honnêtement ce qui est testé et ce qui ne l'est pas, et mets à jour

@@ -1241,12 +1241,10 @@ pub(crate) fn discord_col(c: &mut Ctx, r: &R, x: f32, w: f32) {
 
 pub(crate) fn ai_status(r: &R) -> (Rgba, &'static str) {
     let ai = &r.d.accounts.ai;
-    if ai.contains("prêt") {
+    if ai.starts_with("En service") {
         (GREEN, "Prête")
     } else if ai.contains("ne répond pas") {
-        (RED, "Ollama éteint")
-    } else if ai.contains("manque") {
-        (ORANGE, "Modèle manquant")
+        (RED, "IA éteinte")
     } else {
         (Rgba(0.6, 0.6, 0.6, 1.0), "Vérification…")
     }
@@ -1311,7 +1309,7 @@ pub(crate) fn ai_col(c: &mut Ctx, r: &R, x: f32, w: f32) {
     let line = c.fit(Wt::Regular, 11.5, &line, w - 70.0);
     c.circle(x + w - lw - 10.0, 14.0, 3.5, dot);
     c.text_r(Wt::Regular, 11.5, x + w, 18.0, t.fg2, &line);
-    c.hit(x + w - lw - 20.0, 2.0, lw + 20.0, 22.0, Action::Ile(A_OLLAMA));
+    c.hit(x + w - lw - 20.0, 2.0, lw + 20.0, 22.0, Action::Ile(A_IA));
     input_field(c, r, x - 2.0, 28.0, w + 4.0);
     let mut y = 80.0;
     if let Some((q, a)) = r.chat.log.last() {

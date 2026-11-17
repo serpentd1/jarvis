@@ -13,6 +13,7 @@ mod config;
 mod data;
 mod extra;
 mod gfx;
+mod ia;
 mod ile_settings;
 mod island;
 mod island_cards;
@@ -451,8 +452,6 @@ impl App {
         }
         let _ = self.jobs.send(Job::Sync(accounts::SyncCfg {
             ms_client: accounts::ms_client_id(&self.cfg.mail.ms_client),
-            model: self.cfg.mail.model.trim().to_string(),
-            ollama_url: self.cfg.mail.ollama_url.trim().to_string(),
             ai: self.cfg.mail.ai,
         }));
     }
@@ -492,7 +491,7 @@ impl App {
     }
 
     fn refresh_accounts(&self) {
-        let _ = self.jobs.send(Job::Accounts(self.cfg.mail.model.trim().to_string(), self.cfg.mail.ollama_url.trim().to_string()));
+        let _ = self.jobs.send(Job::Accounts);
     }
 
     fn update_printer_ip(&self) {
@@ -544,7 +543,12 @@ impl App {
                     self.refresh_accounts();
                     self.sync();
                 }
-                Msg::Status(s) => self.status = s,
+                Msg::Status(s) => {
+                    self.status = s;
+                    // une clé d'API ou une IA trouvée change la page IA : on la rafraîchit
+                    self.refresh_accounts();
+                    self.refresh_settings();
+                }
                 Msg::Notify(t, b, l, f) => {
                     if self.cfg.mail.notify {
                         self.notify(island::Src::Mail, &t, &b, Some((l, f)));
@@ -697,6 +701,7 @@ impl App {
             acc: self.data.accounts.clone(),
             discord: self.data.discord_state.clone(),
             winnotif: self.data.winnotif_state.clone(),
+            ia: crate::ia::vue(),
         };
         if let Some(pm) = settings::draw(&mut st, &self.cfg, &self.fonts, &t, self.dpi, &info) {
             settings::store(&mut st, &pm);
@@ -783,10 +788,35 @@ impl App {
                 self.update_printer_ip();
             }
             F::PrinterIp => self.update_printer_ip(),
-            F::AiOn | F::Model | F::OllamaUrl | F::MsClient => {
+            F::AiOn | F::MsClient => {
                 self.refresh_accounts();
                 self.sync();
             }
+            F::IaOn(i) => {
+                crate::ia::basculer(i as usize);
+                self.refresh_accounts();
+            }
+            F::IaTop(i) => {
+                crate::ia::mettre_en_premier(i as usize);
+                self.refresh_accounts();
+            }
+            F::IaDel(i) => {
+                crate::ia::retirer(i as usize);
+                self.refresh_accounts();
+            }
+            F::IaCle => {
+                let texte = self.settings.as_ref().map(|s| s.texte.clone()).unwrap_or_default();
+                self.ia_cle(texte);
+            }
+            F::IaUrl | F::IaModele => {} // enregistré avec le texte (settings.rs)
+            F::IaChercher => {
+                self.status = "Recherche des IA sur ce PC…".into();
+                let out = self.out.clone();
+                std::thread::spawn(move || out.send(Msg::Status(crate::ia::chercher_locaux())));
+            }
+            F::IaLmStudio => sys::open_url("https://lmstudio.ai/download"),
+            F::IaGemini => sys::open_url("https://aistudio.google.com/apikey"),
+            F::IaGroq => sys::open_url("https://console.groq.com/keys"),
             F::GAdd => {
                 let _ = self.jobs.send(Job::GoogleAdd);
             }
@@ -1178,14 +1208,20 @@ impl App {
         }
     }
 
+    /// Le service d'IA qui répond en ce moment (affiché dans l'île).
     fn ile_model(&self) -> String {
-        match self.cfg.ile.ai_model {
-            1 => {
-                let m = self.cfg.mail.model.trim();
-                if m.is_empty() { "llama3.2".into() } else { m.into() }
-            }
-            i => brain::MODELS[i.min(brain::MODELS.len() - 1)].to_string(),
-        }
+        crate::ia::actif().unwrap_or_else(|| "aucune IA".into())
+    }
+
+    /// Ajoute une clé d'API : la vérification passe sur le réseau, donc dans un thread. Le résultat part dans la barre de statut.
+    fn ia_cle(&mut self, cle: String) {
+        let adresse = crate::ia::adresse_saisie();
+        self.status = "Vérification de la clé…".into();
+        let out = self.out.clone();
+        std::thread::spawn(move || {
+            let message = crate::ia::ajouter_cle(&cle, &adresse).unwrap_or_else(|e| e);
+            out.send(Msg::Status(message));
+        });
     }
 
     /// Construit le contexte de dessin et appelle `f`.
@@ -1608,7 +1644,7 @@ impl App {
                         }
                     }
                     island::A_SEND => self.ile_send(),
-                    island::A_OLLAMA => self.refresh_accounts(),
+                    island::A_IA => self.refresh_accounts(),
                     island::A_SETTINGS => self.open_ile_settings(),
                     island::A_BACK => self.set_view(island::View::Main, None),
                     island::A_CHRONO => self.clocks.chrono_toggle(),
@@ -1976,13 +2012,10 @@ impl App {
     }
 
     fn sync_pouvoirs(&self) {
-        pouvoirs::regler(self.cfg.pouvoirs.clone(), &self.cfg.mail.ollama_url, &self.ile_model());
+        pouvoirs::regler(self.cfg.pouvoirs.clone());
         telephone::regler_importants(&self.cfg.discord.people);
-        // le cerveau Rust, quand la voix ne tourne pas : mêmes réglages que le chat de l'île
-        let url = self.cfg.mail.ollama_url.trim().trim_end_matches('/').to_string();
+        // le cerveau Rust, quand la voix ne tourne pas : mêmes réglages que le chat de l'île (le service d'IA vient de ia.rs)
         cerveau::regler(cerveau::Reglages {
-            url: if url.is_empty() { "http://127.0.0.1:11434".into() } else { url },
-            modele: self.ile_model(),
             temperature: self.cfg.ile.ai_temp,
             historique: self.cfg.ile.ai_history.round().max(1.0) as usize,
             ..cerveau::Reglages::default()
@@ -2020,12 +2053,8 @@ impl App {
         let json = c.ai_actions;
         self.chat.next_id += 1;
         let id = self.chat.next_id;
-        let fallback = self.cfg.mail.model.trim().to_string();
         let req = brain::AskReq {
             id,
-            model: self.ile_model(),
-            fallback: if fallback.is_empty() { "llama3.2".into() } else { fallback },
-            url: self.cfg.mail.ollama_url.trim().to_string(),
             system: brain::system_prompt(c.ai_style, &ctx, json),
             history,
             question: q.clone(),
@@ -2212,12 +2241,8 @@ impl App {
     fn mail_fallback(&mut self, id: u64, n: usize, body: &str, demande: &str) {
         let Some(m) = self.data.mail.mails.get(n) else { return };
         let ctx = format!("Mail n°{n}\nDe : {}\nObjet : {}\nReçu le : {}\n\n{body}", m.from, m.subject, m.date.format("%d/%m/%Y à %H:%M"));
-        let fallback = self.cfg.mail.model.trim().to_string();
         let req = brain::AskReq {
             id,
-            model: self.ile_model(),
-            fallback: if fallback.is_empty() { "llama3.2".into() } else { fallback },
-            url: self.cfg.mail.ollama_url.trim().to_string(),
             system: brain::system_prompt(self.cfg.ile.ai_style, &ctx, false),
             history: Vec::new(),
             question: format!("À propos de ce mail : {demande}"),
@@ -3879,7 +3904,12 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
             with_app(|a| {
                 if let Some(mut st) = a.settings.take() {
                     if let Some(f) = settings::commit(&mut st, &mut a.cfg) {
-                        a.apply(f);
+                        if f == F::IaCle {
+                            let texte = st.texte.clone();
+                            a.ia_cle(texte);
+                        } else {
+                            a.apply(f);
+                        }
                     }
                 }
                 config::save(&a.cfg);
@@ -4038,6 +4068,7 @@ unsafe fn run(ile: Option<bool>) {
         cfg.ile.api_port = 47802.0;
     }
     let api_port = Arc::new(AtomicU32::new(if cfg.ile.api_on { cfg.ile.api_port.round() as u32 } else { 0 }));
+    ia::charger(&cfg.mail.ollama_url);
     cerveau::init(out.clone());
     api::spawn(out.clone(), api_port.clone());
     // téléphone Android : le port 47803 n'est ouvert que si un téléphone est déjà relié (ou pendant l'appairage)

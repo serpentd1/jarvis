@@ -170,11 +170,21 @@ L'icône de l'extension affiche « off » quand Jarvis n'est pas lancé.
 - « Fais sonner mon téléphone » ouvre la page Google **Localiser mon appareil** : clique sur « Faire sonner ».
 - Le presse-papiers partagé et l'envoi de fichiers font partie de Mobile connecté lui-même : ça dépend de ton téléphone.
 
+## Choisir son IA
+
+L'IA se choisit dans les réglages de la barre : clic droit sur la barre, **Paramètres**, **IA**. Jarvis essaie toujours la version gratuite en premier.
+
+1. **Gratuit sur le PC** : **LM Studio** (recommandé, modèle `qwen3-4b` téléchargé par l'installeur), Jan, Ollama.
+2. **Gratuit en ligne, avec une clé** : Google Gemini, Groq, OpenRouter (modèles « :free »), Mistral, Cerebras.
+3. **Payant, avec une clé** : OpenAI, Anthropic, xAI, DeepSeek…
+
+Tu peux coller n'importe quelle clé d'API : Jarvis devine le service d'après la clé. Pour un service inconnu, colle aussi son adresse. Les clés sont chiffrées dans la barre. Dis « quelle IA ? » pour savoir laquelle Jarvis utilise.
+
 ## Si ça ne marche pas
 
 - **Il ne réagit pas à « Hey Jarvis »** : baisse `seuil_activation` (0.35). **Il réagit tout seul** : monte-le (0.6–0.7).
 - **Mauvais micro** : mets un morceau de son nom dans `[micro] appareil` (ex. `"Razer"`).
-- **« Je n'arrive pas à joindre Ollama »** : lance Ollama (l'icône du lama).
+- **« Aucune IA ne répond »** : ouvre LM Studio (ou ajoute une clé gratuite : clic droit sur la barre, Paramètres, IA).
 - **Jarvis ne démarre plus, ou un fichier a disparu** : ton antivirus l'a peut-être mis en quarantaine. Restaure-le, autorise le dossier de Jarvis, puis relance l'installeur. Ce qui est déjà installé n'est pas retéléchargé.
 - **Pour comprendre ce qui se passe** : menu de l'icône → **Journal de Jarvis** (`%APPDATA%\Jarvis\jarvis.log`).
 
@@ -184,7 +194,7 @@ L'icône de l'extension affiche « off » quand Jarvis n'est pas lancé.
 |---|---|---|
 | « Hey Jarvis » | openWakeWord | processeur, très léger |
 | Ta voix → texte | faster-whisper `large-v3-turbo` | carte graphique (0,2 s) |
-| Réflexion et actions | Ollama `qwen3.5:4b` + raccourcis instantanés | carte graphique (0,3 à 0,8 s) |
+| Réflexion et actions | LM Studio `qwen3-4b` (ou la clé d'API choisie) + raccourcis instantanés | carte graphique (0,3 à 0,8 s) |
 | Texte → voix | Kokoro (voix HD) | GPU CUDA si disponible, sinon processeur |
 | Texte → voix | Piper (voix rapides) | processeur |
 

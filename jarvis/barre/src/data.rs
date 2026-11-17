@@ -169,14 +169,14 @@ pub enum Job {
     Weather(f64, f64),
     Geocode(String),
     Holidays(String),
-    Accounts(String, String),
+    Accounts,
     Sync(accounts::SyncCfg),
     GoogleAdd,
     GoogleDel(usize),
     MsAdd(String),
     MsDel,
     CreateEvent(String, NaiveDate, Option<chrono::NaiveTime>, i64),
-    /// Question à Ollama (île ou Jarvis).
+    /// Question à l'IA (île ou Jarvis).
     Ask(crate::brain::AskReq),
     /// Corps complet d'un mail (client Hotmail pour Outlook).
     MailBody(Mail, String),
@@ -202,7 +202,7 @@ pub enum Msg {
     School(crate::pronote::School),
     /// Notification Pronote : 0 note, 1 devoir, 2 cours annulé.
     PNotify(u8, String, String),
-    /// Réponse d'Ollama (n° de la question, texte brut ou erreur).
+    /// Réponse de l'IA (n° de la question, texte brut ou erreur).
     Answer(u64, Result<String, String>),
     /// Requête de l'API locale (Jarvis) ; la réponse (code HTTP, JSON) part dans le canal.
     Api(crate::api::ApiReq, std::sync::mpsc::Sender<(u16, String)>),
@@ -263,7 +263,7 @@ pub fn spawn(main: isize, vault: Arc<Mutex<accounts::Secrets>>) -> (Sender<Job>,
                 Job::Weather(la, lo) => o.send(Msg::Weather(fetch_weather(&ag, la, lo))),
                 Job::Geocode(n) => o.send(Msg::Geo(geocode(&ag, &n))),
                 Job::Holidays(a) => o.send(Msg::Holidays(fetch_holidays(&ag, &a))),
-                Job::Accounts(model, url) => o.send(Msg::Accounts(accounts::info(&vault, &model, &url))),
+                Job::Accounts => o.send(Msg::Accounts(accounts::info(&vault))),
                 Job::Sync(c) => accounts::sync(&ag, &vault, &mut st, &c, &o),
                 Job::GoogleAdd => {
                     let (v, o2) = (vault.clone(), o.clone());
@@ -317,7 +317,7 @@ pub fn spawn(main: isize, vault: Arc<Mutex<accounts::Secrets>>) -> (Sender<Job>,
                 Job::Ask(r) => {
                     // fil à part : une réponse peut prendre une minute, la météo ne doit pas attendre
                     let o2 = o.clone();
-                    std::thread::spawn(move || o2.send(Msg::Answer(r.id, accounts::ollama_ask(&r))));
+                    std::thread::spawn(move || o2.send(Msg::Answer(r.id, accounts::ia_ask(&r))));
                 }
             }
         }

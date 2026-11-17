@@ -82,7 +82,7 @@ Contraintes : tout en Rust (pas de nouveau Python), une seule appli/icône, acti
 
 ## Installation et fiabilité
 - [ ] 47. Mise à jour automatique de `JarvisBarre.exe` avec Jarvis, en une fois.
-- [ ] 48. Page « Diagnostic » dans la grande île : Ollama, micro, Pronote, extension Chrome.
+- [ ] 48. Page « Diagnostic » dans la grande île : l'IA (LM Studio ou clé), micro, Pronote, extension Chrome.
 - [ ] 49. Installeur avec choix « avec ou sans widgets » et aperçu de la nouvelle icône.
 - [ ] 50. Mode « portable » sur clé USB (dossier de données à côté de l'exe).
 

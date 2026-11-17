@@ -90,8 +90,10 @@ impl Default for CountCfg {
 pub struct MailCfg {
     pub on: bool,
     pub ai: bool,
+    /// Ancien réglage (modèle des mails), gardé pour lire les vieux fichiers. Le choix se fait dans ia.bin.
+    #[allow(dead_code)]
     pub model: String,
-    /// Adresse d'Ollama (vide = celle par défaut, sur ce PC).
+    /// Ancienne adresse d'Ollama : sert seulement à la première lecture de ia.bin (migration).
     pub ollama_url: String,
     pub notify: bool,
     pub ms_client: String,

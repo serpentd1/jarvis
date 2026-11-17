@@ -1,14 +1,13 @@
 """Jarvis regarde ton écran : « qu'est-ce qu'il y a sur mon écran ? », « explique-moi cette vidéo »,
-« clique sur S'abonner ». L'IA locale (qwen3.5) lit la capture d'écran : rien ne part sur Internet."""
+« clique sur S'abonner ». L'IA lit la capture d'écran : celle que tu as choisie dans la barre (LM Studio sur ce PC
+par défaut, rien ne part sur Internet ; une clé d'API en ligne, elle, envoie l'image à son service)."""
 import base64
 import io
 import json
 import logging
 import re
 
-import requests
-
-from core import controle
+from core import controle, ollama
 from . import Resultat
 
 log = logging.getLogger("ecran")
@@ -26,18 +25,9 @@ def installer(ctx, reg):
     cfg = ctx.cfg["cerveau"]
 
     def voir(consigne: str, image, temperature: float = 0.3, max_jetons: int = 300) -> str | None:
-        corps = {"model": cfg["modele"], "stream": False, "think": False, "keep_alive": cfg["garder_en_memoire"],
-                 "options": {"temperature": temperature, "num_ctx": int(cfg["contexte"]), "num_predict": max_jetons},
-                 "messages": [{"role": "user", "content": consigne, "images": [en_base64(image)]}]}
-        try:
-            r = requests.post(f"{cfg['ollama_url'].rstrip('/')}/api/chat", json=corps, timeout=120)
-            if r.status_code >= 400:
-                log.error("vision : %s", r.text[:200])
-                return None
-            return re.sub(r"<think>.*?</think>", "", r.json().get("message", {}).get("content", ""), flags=re.S).strip()
-        except Exception:  # noqa: BLE001
-            log.exception("vision")
-            return None
+        # Passe par la barre (/ia/discuter) : l'image va dans "images" du message.
+        return ollama.discuter(cfg, [{"role": "user", "content": consigne, "images": [en_base64(image)]}],
+                               temperature=temperature, max_mots=max_jetons)
 
     ctx.voir = voir          # aussi pour lire une leçon à l'écran (modules/lecons.py)
 

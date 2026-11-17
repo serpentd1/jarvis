@@ -1103,7 +1103,7 @@ pub fn accounts_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
         y3 += 15.0;
     }
     y3 += 6.0;
-    let ai_ok = acc.ai.contains("prêt");
+    let ai_ok = acc.ai.starts_with("En service");
     status_dot(c, x2 + 20.0, y3 - 4.0, ai_ok);
     let ai = c.fit(Wt::Regular, 12.0, &acc.ai, colw - 46.0);
     c.text(Wt::Regular, 12.0, x2 + 32.0, y3, t.fg2, &ai);

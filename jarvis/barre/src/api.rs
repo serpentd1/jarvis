@@ -10,6 +10,9 @@
 //!   GET  /notifs?depuis=ID → {"ok":true,"dernier":ID,"notifs":[…]}
 //!   POST /cerveau {"texte":"…","source":"voix","coupe":"…","reglages":{…}} → une ligne JSON par phrase prête
 //!        {"phrase":"…"} puis {"fin":true,"reponse":"…","reste":"…","suivi":false} ; POST /cerveau/oublier {}
+//!   POST /ia/discuter {"messages":[…],"temperature":0.4,"max_mots":300,"json":false,"outils":[]} → {"ok":true,"texte":"…","appels":[[nom,args]],"fournisseur":"LM Studio · modèle"} ou {"ok":false,"erreur":"…"}
+//!        (les messages peuvent avoir "images":[base64])
+//!   GET  /ia/etat → les services (sans les clés) ; POST /ia/cle {"cle":"…","adresse":""} → {"ok":true|false,"message":"…"}
 //! Les requêtes venant d'une page web (en-tête Origin) sont refusées.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -122,6 +125,32 @@ Connection: close
     let _ = s.flush();
 }
 
+/// POST /ia/discuter : une question à l'IA (le service qui répond le premier, le gratuit d'abord).
+fn ia_discuter(j: &Value) -> Value {
+    let messages: Vec<Value> = j["messages"].as_array().cloned().unwrap_or_default();
+    if messages.is_empty() {
+        return json!({"ok": false, "erreur": "« messages » manquant"});
+    }
+    let req = crate::ia::Requete {
+        messages,
+        outils: j["outils"].as_array().cloned().unwrap_or_default(),
+        max_mots: j["max_mots"].as_u64().unwrap_or(300) as u32,
+        temperature: j["temperature"].as_f64().unwrap_or(0.4) as f32,
+        json: j["json"].as_bool().unwrap_or(false),
+        rapide: false,
+        contexte: 8192,
+        garder: "30m".into(),
+    };
+    match crate::ia::discuter(&req, None) {
+        Ok(x) => {
+            let appels: Vec<Value> = x.appels.iter().map(|(nom, args)| json!([nom, args])).collect();
+            json!({"ok": true, "texte": x.contenu, "appels": appels, "fournisseur": crate::ia::actif().unwrap_or_default()})
+        }
+        Err(crate::ia::Echec::Injoignable) => json!({"ok": false, "erreur": "Je n'arrive à joindre aucune IA."}),
+        Err(crate::ia::Echec::Autre(t)) => json!({"ok": false, "erreur": t}),
+    }
+}
+
 fn err(msg: &str) -> String {
     json!({"ok": false, "erreur": msg}).to_string()
 }
@@ -174,7 +203,7 @@ fn handle(s: TcpStream, out: &Out) {
             None => return reply(s, 400, &err("paramètre n manquant (/mail?n=0)")),
         },
         ("GET", "") => {
-            return reply(s, 200, &json!({"ok": true, "nom": "Jarvis", "routes": ["GET /etat", "GET /notifs?depuis=ID", "GET /mail?n=N", "POST /demander", "POST /jarvis", "POST /notif", "POST /minuteur", "POST /minuteur/annuler", "POST /alarme", "POST /chrono", "POST /ouvrir", "POST /meteo/actualiser", "POST /quitter", "POST /cerveau", "POST /cerveau/oublier", "GET /outils", "POST /outil", "POST /outil/confirmer"]}).to_string());
+            return reply(s, 200, &json!({"ok": true, "nom": "Jarvis", "routes": ["GET /etat", "GET /notifs?depuis=ID", "GET /mail?n=N", "POST /demander", "POST /jarvis", "POST /notif", "POST /minuteur", "POST /minuteur/annuler", "POST /alarme", "POST /chrono", "POST /ouvrir", "POST /meteo/actualiser", "POST /quitter", "POST /cerveau", "POST /cerveau/oublier", "POST /ia/discuter", "GET /ia/etat", "POST /ia/cle", "GET /outils", "POST /outil", "POST /outil/confirmer"]}).to_string());
         }
         ("POST", _) if j.is_null() => return reply(s, 400, &err("JSON invalide")),
         ("POST", "/demander") => {
@@ -197,6 +226,16 @@ fn handle(s: TcpStream, out: &Out) {
         ("POST", "/quitter") => ApiReq::Quit,
         // le cerveau (cerveau.rs) : traité dans le fil de la requête, la réponse part phrase par phrase
         ("POST", "/cerveau") => return cerveau_flux(s, &j),
+        // les fournisseurs d'IA (ia.rs) : discussion, état, ajout d'une clé
+        ("POST", "/ia/discuter") => return reply(s, 200, &ia_discuter(&j).to_string()),
+        ("GET", "/ia/etat") => return reply(s, 200, &crate::ia::etat_json().to_string()),
+        ("POST", "/ia/cle") => {
+            let (ok, message) = match crate::ia::ajouter_cle(&txt("cle"), &txt("adresse")) {
+                Ok(m) => (true, m),
+                Err(m) => (false, m),
+            };
+            return reply(s, 200, &json!({"ok": ok, "message": message}).to_string());
+        }
         ("POST", "/cerveau/oublier") => {
             crate::cerveau::oublier();
             return reply(s, 200, &json!({"ok": true}).to_string());

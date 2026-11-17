@@ -33,7 +33,7 @@ const ID_INSTALLER: i32 = 1;
 const ID_FERMER: i32 = 2;
 const ID_DEMARRAGE: i32 = 3;
 const ID_BUREAU: i32 = 4;
-const ID_OLLAMA: i32 = 5;
+const ID_LMSTUDIO: i32 = 5;
 const ID_LANCER: i32 = 6;
 const ID_EXTENSION: i32 = 7;
 
@@ -171,7 +171,7 @@ unsafe fn construire(h: HWND, instance: *mut core::ffi::c_void, s: &dyn Fn(i32) 
     let cases = [
         (ID_DEMARRAGE, "Démarrer Jarvis avec Windows"),
         (ID_BUREAU, "Créer un raccourci sur le Bureau"),
-        (ID_OLLAMA, "Installer Ollama (le moteur d'IA, gratuit) s'il n'est pas déjà là"),
+        (ID_LMSTUDIO, "Installer LM Studio (le moteur d'IA, gratuit) s'il n'est pas déjà là"),
     ];
     for (i, (id, texte)) in cases.iter().enumerate() {
         let c = ajouter("BUTTON", texte, (BS_AUTOCHECKBOX | WS_TABSTOP as i32) as u32, 24, 124 + i as i32 * 26, 580, 24, *id, false);
@@ -198,9 +198,9 @@ fn demarrer_installation() {
     let mut options = OPTIONS.lock().unwrap().clone().unwrap_or_else(etapes::Options::par_defaut);
     options.demarrage = coche(ID_DEMARRAGE) && options.raccourcis;
     options.bureau = coche(ID_BUREAU) && options.raccourcis;
-    options.ollama = coche(ID_OLLAMA);
+    options.lmstudio = coche(ID_LMSTUDIO);
     unsafe {
-        for id in [ID_INSTALLER, ID_DEMARRAGE, ID_BUREAU, ID_OLLAMA] {
+        for id in [ID_INSTALLER, ID_DEMARRAGE, ID_BUREAU, ID_LMSTUDIO] {
             EnableWindow(controle(id), 0);
         }
     }

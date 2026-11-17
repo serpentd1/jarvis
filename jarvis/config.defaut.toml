@@ -62,6 +62,9 @@ lenteur = 1.0
 volume = 1.0
 
 [cerveau]
+# L'IA se choisit dans les réglages de la barre (clic droit sur la barre, Paramètres, IA) :
+# LM Studio sur le PC d'abord (gratuit), ou n'importe quelle clé d'API (gratuite d'abord, puis payante).
+# Les deux réglages ci-dessous ne servent plus qu'au cerveau de secours, si la barre est absente.
 ollama_url = "http://127.0.0.1:11434"
 # qwen3.5:4b : rapide (≈0,3 s), léger (3,4 Go), sait déclencher des actions.
 modele = "qwen3.5:4b"
