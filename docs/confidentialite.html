@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Confidentialité de Jarvis</title>
+<meta name="description" content="Règles de confidentialité de Jarvis : tes données restent sur ton PC.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body><main>
+<h1>Règles de confidentialité</h1>
+<p class="sous">Jarvis, assistant vocal pour Windows · mise à jour le 17 novembre 2026</p>
+<div class="carte"><strong>En bref : tout reste sur ton PC.</strong> Jarvis n'a pas de serveur. Le créateur de Jarvis ne reçoit, ne voit et ne garde aucune de tes données.</div>
+
+<h2>Ce que Jarvis utilise</h2>
+<ul>
+<li><strong>Ta voix</strong> : elle est transformée en texte sur ton PC (Whisper ou Parakeet). Aucun son n'est envoyé sur Internet.</li>
+<li><strong>Tes demandes</strong> : elles sont comprises par une IA installée sur ton PC (Ollama).</li>
+<li><strong>Ton compte Google</strong>, seulement si tu le connectes toi-même :
+<ul>
+<li>Gmail, en <strong>lecture seule</strong> (<code>gmail.readonly</code>) : pour afficher et annoncer tes mails importants, et les résumer à ta demande. Jarvis ne peut ni envoyer, ni supprimer, ni modifier de mail.</li>
+<li>Google Agenda (<code>calendar.readonly</code>, <code>calendar.events</code>, <code>calendar.app.created</code>) : pour afficher tes événements, et ajouter ceux que tu lui demandes (par exemple tes devoirs) dans un agenda créé par Jarvis.</li>
+</ul></li>
+</ul>
+
+<h2>Où vont tes données</h2>
+<ul>
+<li>Les données de Google sont lues directement depuis les serveurs de Google <strong>vers ton PC</strong>, et nulle part ailleurs.</li>
+<li>L'autorisation Google (le « jeton ») est gardée sur ton PC, chiffrée par Windows : seule ta session Windows peut la lire.</li>
+<li>Jarvis ne vend, ne partage et ne transmet aucune donnée, ni au créateur de Jarvis, ni à des publicités, ni à d'autres services.</li>
+<li>Jarvis n'utilise pas tes données Google pour entraîner une IA.</li>
+</ul>
+<p>L'utilisation et le transfert des informations reçues des API Google respectent les <a href="https://developers.google.com/terms/api-services-user-data-policy">Règles relatives aux données utilisateur des services d'API Google</a>, y compris les exigences d'utilisation limitée.</p>
+
+<h2>Supprimer tes données</h2>
+<ul>
+<li>Sur ton PC : désinstalle Jarvis (Paramètres de Windows › Applications), ses données partent avec.</li>
+<li>Chez Google, à tout moment : <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> › Jarvis › Supprimer l'accès.</li>
+</ul>
+
+<h2>Contact</h2>
+<p><a href="mailto:jarvis-aide-2026@googlegroups.com">jarvis-aide-2026@googlegroups.com</a></p>
+<footer><a href="index.html">← Accueil de Jarvis</a></footer>
+</main></body>
+</html>
