@@ -412,7 +412,10 @@ fn winnotif_poll(
     let mut new = Vec::new();
     for n in list {
         let Ok(id) = n.Id() else { continue };
-        if seen.contains(&id) || !is_discord(&n) {
+        if seen.contains(&id) {
+            continue;
+        }
+        if !is_discord(&n) {
             continue;
         }
         seen.insert(id);
@@ -434,6 +437,7 @@ fn winnotif_poll(
     }
     Ok("activées".into())
 }
+
 
 /// `givre.exe --notif-test` : vérifie l'accès aux notifications sans rien afficher de privé.
 pub fn notif_selftest() {

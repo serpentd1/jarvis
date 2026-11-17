@@ -1,5 +1,5 @@
 #![windows_subsystem = "windows"]
-//! Installer-Jarvis.exe — installe Jarvis + la barre Givre dans %LOCALAPPDATA%\Programs\Jarvis,
+//! Installer-Jarvis.exe — installe Jarvis + sa barre dans %LOCALAPPDATA%\Programs\Jarvis,
 //! sans droits administrateur. Une fenêtre simple : options, barre de progression, journal.
 //!
 //!   Installer-Jarvis.exe                    installation normale
@@ -164,7 +164,7 @@ unsafe fn construire(h: HWND, instance: *mut core::ffi::c_void, s: &dyn Fn(i32) 
     };
     ajouter("STATIC", "Jarvis", 0, 24, 16, 580, 34, 100, true);
     ajouter("STATIC",
-        "Assistant vocal 100 % local et gratuit (« Hey Jarvis ») + la barre Givre en haut de l'écran.\n\
+        "Assistant vocal 100 % local et gratuit (« Hey Jarvis ») + sa barre en haut de l'écran.\n\
          Tout s'installe dans ton dossier utilisateur, sans droits administrateur. Il faut Internet \
          et environ 8 Go d'espace (modèles de voix et d'IA).",
         0, 24, 56, 580, 60, 101, false);

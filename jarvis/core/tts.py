@@ -1,6 +1,6 @@
 """Texte -> voix, en local. Plusieurs voix au choix (menu de l'icône, « change de voix », config.toml).
 
-- Kokoro : voix plus naturelles (un peu plus lent, ~0,2 s par seconde de parole, sur le processeur).
+- Kokoro : voix plus naturelles, utilise le GPU CUDA quand disponible (sinon processeur).
 - Piper  : voix rapides et légères.
 Une voix manquante est téléchargée la première fois qu'on la choisit.
 """
@@ -93,8 +93,26 @@ class Voix:
         with self.verrou:
             if v["moteur"] == "kokoro":
                 if Voix._kokoro is None:
+                    from . import cuda
+                    cuda.preparer()
+                    import onnxruntime as ort
                     from kokoro_onnx import Kokoro
-                    Voix._kokoro = Kokoro(str(DOSSIER_KOKORO / KOKORO_FICHIERS[0]), str(DOSSIER_KOKORO / KOKORO_FICHIERS[1]))
+                    modele, voix = map(str, (DOSSIER_KOKORO / KOKORO_FICHIERS[0],
+                                             DOSSIER_KOKORO / KOKORO_FICHIERS[1]))
+                    fournisseurs = ort.get_available_providers()
+                    session = None
+                    if "CUDAExecutionProvider" in fournisseurs:
+                        try:
+                            session = ort.InferenceSession(
+                                modele, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+                        except Exception as e:  # noqa: BLE001 — CUDA ONNX peut ne pas avoir toutes ses DLL
+                            log.warning("GPU indisponible pour Kokoro (%s) ; repli sur le processeur.", e)
+                    if session is not None and "CUDAExecutionProvider" not in session.get_providers():
+                        log.warning("Kokoro n'a pas activé CUDA ; repli sur le processeur.")
+                    if session is None or "CUDAExecutionProvider" not in session.get_providers():
+                        session = ort.InferenceSession(modele, providers=["CPUExecutionProvider"])
+                    Voix._kokoro = Kokoro.from_session(session, voix)
+                    log.info("Moteur ONNX pour Kokoro : %s", ", ".join(session.get_providers()))
                 self.moteur = ("kokoro", v["voix"])
             else:
                 from piper import PiperVoice, SynthesisConfig

@@ -47,6 +47,25 @@ pub const A_VOL_DOWN: u8 = 29;
 pub const A_DND: u8 = 30;
 pub const A_NOTIF_SETTINGS: u8 = 31;
 pub const A_TABS_SETTINGS: u8 = 32;
+pub const A_LIST_DEL: u8 = 34;
+pub const A_COPIES_CLEAR: u8 = 35;
+pub const A_MEM_DEL: u8 = 36;
+pub const A_REM_CLEAN: u8 = 37;
+pub const A_BIG_CLOSE: u8 = 38;
+pub const A_MEM_CENTER: u8 = 39;
+pub const A_ROUT_SAVE: u8 = 40;
+pub const A_ROUT_CLEAR: u8 = 41;
+pub const A_MEM_LINK: u8 = 42;
+pub const A_PN_PASTE: u8 = 43;
+pub const A_PN_LOGIN: u8 = 44;
+pub const A_G_ADD: u8 = 45;
+pub const A_MS_ADD: u8 = 46;
+pub const A_ACCOUNTS: u8 = 47;
+pub const A_SETTINGS_ACC: u8 = 48;
+pub const A_PN_OPEN: u8 = 49;
+pub const A_BIG_OPEN: u8 = 50;
+pub const A_PN_TOGGLE: u8 = 51;
+pub const A_MAIL_TOGGLE: u8 = 52;
 /// IleN : vue (n = View), devoir choisi, devoir fait, mail choisi, minuteur +n s, pause/suppression minuteur n, note choisie.
 pub const N_VIEW: u8 = 1;
 pub const N_HW: u8 = 2;
@@ -60,6 +79,88 @@ pub const N_DISCORD: u8 = 9;
 pub const N_TAB: u8 = 10;
 pub const N_CLIP: u8 = 11;
 pub const N_MAIL_ASK: u8 = 12;
+pub const N_TASK_TOGGLE: u8 = 13;
+pub const N_TASK_DEL: u8 = 14;
+pub const N_LIST: u8 = 15;
+pub const N_REM_DEL: u8 = 16;
+pub const N_HAB_TOGGLE: u8 = 17;
+pub const N_HAB_DEL: u8 = 18;
+pub const N_COPY: u8 = 19;
+pub const N_COPY_DEL: u8 = 20;
+pub const N_ROUT_RUN: u8 = 21;
+pub const N_PC_ACT: u8 = 22;
+pub const N_SET_TOGGLE: u8 = 23;
+pub const N_SET_DEC: u8 = 24;
+pub const N_SET_INC: u8 = 25;
+pub const N_SET_TEXT: u8 = 26;
+pub const N_INPUT: u8 = 27;
+pub const N_REM_ADJ: u8 = 28;
+pub const N_VOL: u8 = 29;
+pub const N_SECTION: u8 = 31;
+pub const N_VOICE: u8 = 32;
+pub const N_STARTUP: u8 = 33;
+pub const N_ROUT_DEL: u8 = 34;
+
+/// Ce que vise le champ de saisie de l'île.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum InputFor {
+    #[default]
+    Chat,
+    Task,
+    NewList,
+    Reminder,
+    Habit,
+    Memory,
+    Deezer,
+    RoutineName,
+    RoutineTrigger,
+    RoutineTime,
+    RoutineStep,
+    /// Relation entre deux souvenirs (mémoire).
+    Relation,
+    /// Code à 4 chiffres de Pronote.
+    Pin,
+    /// Réglage texte de Jarvis (n° dans la liste « reglages »).
+    Setting(usize),
+}
+
+impl InputFor {
+    pub fn from(n: u16) -> InputFor {
+        match n {
+            1 => InputFor::Task,
+            2 => InputFor::NewList,
+            3 => InputFor::Reminder,
+            4 => InputFor::Habit,
+            5 => InputFor::Memory,
+            6 => InputFor::Deezer,
+            8 => InputFor::RoutineName,
+            9 => InputFor::RoutineTrigger,
+            10 => InputFor::RoutineTime,
+            11 => InputFor::RoutineStep,
+            12 => InputFor::Relation,
+            13 => InputFor::Pin,
+            _ => InputFor::Chat,
+        }
+    }
+    pub fn code(self) -> u16 {
+        match self {
+            InputFor::Chat => 0,
+            InputFor::Task => 1,
+            InputFor::NewList => 2,
+            InputFor::Reminder => 3,
+            InputFor::Habit => 4,
+            InputFor::Memory => 5,
+            InputFor::Deezer => 6,
+            InputFor::Setting(_) => 7,
+            InputFor::RoutineName => 8,
+            InputFor::RoutineTrigger => 9,
+            InputFor::RoutineTime => 10,
+            InputFor::RoutineStep => 11,
+            InputFor::Relation => 12,
+            InputFor::Pin => 13,
+        }
+    }
+}
 
 /// Ce que l'île montre en ce moment.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -88,6 +189,16 @@ pub enum View {
     School = 10,
     Calendar = 11,
     Clips = 12,
+    Phone = 13,
+    Tasks = 14,
+    Reminders = 15,
+    Habits = 16,
+    Routines = 17,
+    Memory = 18,
+    Pc = 19,
+    Batteries = 20,
+    JSettings = 21,
+    Accounts = 22,
 }
 
 impl View {
@@ -105,6 +216,16 @@ impl View {
             10 => View::School,
             11 => View::Calendar,
             12 => View::Clips,
+            13 => View::Phone,
+            14 => View::Tasks,
+            15 => View::Reminders,
+            16 => View::Habits,
+            17 => View::Routines,
+            18 => View::Memory,
+            19 => View::Pc,
+            20 => View::Batteries,
+            21 => View::JSettings,
+            22 => View::Accounts,
             _ => View::Main,
         }
     }
@@ -174,10 +295,20 @@ pub enum Tab {
     School,
     Calendar,
     Mails,
+    Phone,
+    Tasks,
+    Reminders,
+    Habits,
+    Routines,
+    Memory,
+    Pc,
+    Batteries,
+    JSettings,
+    Accounts,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 11] = [Tab::Home, Tab::Jarvis, Tab::Music, Tab::Discord, Tab::Timers, Tab::Dnd, Tab::Notifs, Tab::Clips, Tab::School, Tab::Calendar, Tab::Mails];
+    pub const ALL: [Tab; 21] = [Tab::Home, Tab::Jarvis, Tab::Music, Tab::Discord, Tab::Timers, Tab::Dnd, Tab::Notifs, Tab::Clips, Tab::School, Tab::Calendar, Tab::Mails, Tab::Phone, Tab::Tasks, Tab::Reminders, Tab::Habits, Tab::Routines, Tab::Memory, Tab::Pc, Tab::Batteries, Tab::JSettings, Tab::Accounts];
     pub fn view(self) -> View {
         match self {
             Tab::Home => View::Main,
@@ -191,6 +322,16 @@ impl Tab {
             Tab::School => View::School,
             Tab::Calendar => View::Calendar,
             Tab::Mails => View::Mails,
+            Tab::Phone => View::Phone,
+            Tab::Tasks => View::Tasks,
+            Tab::Reminders => View::Reminders,
+            Tab::Habits => View::Habits,
+            Tab::Routines => View::Routines,
+            Tab::Memory => View::Memory,
+            Tab::Pc => View::Pc,
+            Tab::Batteries => View::Batteries,
+            Tab::JSettings => View::JSettings,
+            Tab::Accounts => View::Accounts,
         }
     }
     /// Onglet qui correspond à une page (les pages Devoirs / Notes vont avec « Pronote »).
@@ -207,6 +348,16 @@ impl Tab {
             View::School | View::Homework | View::Grades => Tab::School,
             View::Calendar => Tab::Calendar,
             View::Mails => Tab::Mails,
+            View::Phone => Tab::Phone,
+            View::Tasks => Tab::Tasks,
+            View::Reminders => Tab::Reminders,
+            View::Habits => Tab::Habits,
+            View::Routines => Tab::Routines,
+            View::Memory => Tab::Memory,
+            View::Pc => Tab::Pc,
+            View::Batteries => Tab::Batteries,
+            View::JSettings => Tab::JSettings,
+            View::Accounts => Tab::Accounts,
         }
     }
     pub fn label(self) -> &'static str {
@@ -222,6 +373,16 @@ impl Tab {
             Tab::School => "PRONOTE",
             Tab::Calendar => "AGENDA",
             Tab::Mails => "MAILS",
+            Tab::Phone => "TÉLÉPHONE",
+            Tab::Tasks => "TÂCHES",
+            Tab::Reminders => "RAPPELS",
+            Tab::Habits => "HABITUDES",
+            Tab::Routines => "ROUTINES",
+            Tab::Memory => "MÉMOIRE",
+            Tab::Pc => "MON PC",
+            Tab::Batteries => "BATTERIES",
+            Tab::JSettings => "RÉGLAGES",
+            Tab::Accounts => "COMPTES",
         }
     }
 }
@@ -239,6 +400,15 @@ pub fn tabs(c: &IleCfg) -> Vec<Tab> {
         (c.t_school, c.ot_school, Tab::School),
         (c.t_calendar, c.ot_calendar, Tab::Calendar),
         (c.t_mails, c.ot_mails, Tab::Mails),
+        (c.t_phone, c.ot_phone, Tab::Phone),
+        (c.t_tasks, c.ot_tasks, Tab::Tasks),
+        (c.t_reminders, c.ot_reminders, Tab::Reminders),
+        (c.t_habits, c.ot_habits, Tab::Habits),
+        (c.t_routines, c.ot_routines, Tab::Routines),
+        (c.t_memory, c.ot_memory, Tab::Memory),
+        (c.t_pc, c.ot_pc, Tab::Pc),
+        (c.t_batteries, c.ot_batteries, Tab::Batteries),
+        (c.t_jsettings, c.ot_jsettings, Tab::JSettings),
     ]
     .into_iter()
     .enumerate()
@@ -274,6 +444,7 @@ pub enum Src {
     Timer,
     Alarm,
     Weather,
+    Phone,
     Jarvis,
     Other,
 }
@@ -287,6 +458,7 @@ impl Src {
             "minuteur" | "timer" => Src::Timer,
             "alarme" => Src::Alarm,
             "meteo" | "météo" => Src::Weather,
+            "telephone" | "téléphone" | "sms" | "appel" => Src::Phone,
             "jarvis" | "" => Src::Jarvis,
             _ => Src::Other,
         }
@@ -300,6 +472,7 @@ impl Src {
             Src::Timer => "minuteur",
             Src::Alarm => "alarme",
             Src::Weather => "meteo",
+            Src::Phone => "telephone",
             Src::Jarvis | Src::Other => "jarvis",
         }
     }
@@ -311,6 +484,7 @@ impl Src {
             Src::Timer => "Minuteur",
             Src::Alarm => "Alarme",
             Src::Weather => "Météo",
+            Src::Phone => "Téléphone",
             Src::Jarvis => "Jarvis",
             Src::Other => "Info",
         }
@@ -323,6 +497,7 @@ impl Src {
             Src::Discord => (c.ni_discord, c.nt_discord),
             Src::Timer | Src::Alarm => (c.ni_timer, c.nt_timer),
             Src::Weather => (c.ni_jarvis, c.nt_jarvis),
+            Src::Phone => (c.ni_phone, c.nt_phone),
             Src::Jarvis | Src::Other => (c.ni_jarvis, c.nt_jarvis),
         };
         (c.n_island && i && !c.dnd, c.n_toast && t && !c.dnd)
@@ -333,9 +508,48 @@ impl Src {
 pub struct INotif {
     pub id: u64,
     pub src: Src,
+    /// Type précis (téléphone : « sms », « appel »…), vide sinon.
+    pub kind: String,
     pub title: String,
     pub body: String,
     pub time: NaiveDateTime,
+}
+
+/// Masque les codes (suites de 4 à 8 chiffres, éventuellement séparées par un espace ou un tiret) :
+/// « code 123456 » → « code •••••• ». Les numéros plus longs (téléphone) ne sont pas touchés.
+pub fn mask_codes(s: &str) -> String {
+    let ch: Vec<char> = s.chars().collect();
+    let mut out: Vec<char> = ch.clone();
+    let mut i = 0;
+    while i < ch.len() {
+        if !ch[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        // groupe de chiffres avec séparateurs simples
+        let start = i;
+        let mut j = i;
+        let mut digits = 0;
+        while j < ch.len() {
+            if ch[j].is_ascii_digit() {
+                digits += 1;
+                j += 1;
+            } else if (ch[j] == ' ' || ch[j] == '-') && j + 1 < ch.len() && ch[j + 1].is_ascii_digit() && j > start {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if (4..=8).contains(&digits) {
+            for k in start..j {
+                if ch[k].is_ascii_digit() {
+                    out[k] = '•';
+                }
+            }
+        }
+        i = j;
+    }
+    out.into_iter().collect()
 }
 
 // ---------- Minuteurs, chronomètre, alarme ----------
@@ -539,15 +753,41 @@ pub struct Jarvis {
     /// Dernière nouvelle de Jarvis (réponse à GET :47801/etat ou POST /jarvis).
     pub seen: Option<Instant>,
     pub micro: bool,
+    /// Phrase que Jarvis est en train de dire : (début, durée en secondes).
+    pub said: Option<(Instant, f64)>,
 }
 
 impl Default for Jarvis {
     fn default() -> Self {
-        Jarvis { state: "repos".into(), text: String::new(), at: None, seen: None, micro: true }
+        Jarvis { state: "repos".into(), text: String::new(), at: None, seen: None, micro: true, said: None }
     }
 }
 
+/// Le début d'un texte, mot par mot, selon l'avancement de la voix (écoulé, durée). Trop long : on garde la fin.
+pub fn karaoke(text: &str, avance: Option<(f64, f64)>, max_chars: usize) -> String {
+    let Some((ecoule, duree)) = avance.filter(|a| a.1 > 0.0) else { return text.to_string() };
+    let mots: Vec<&str> = text.split_whitespace().collect();
+    if mots.is_empty() {
+        return String::new();
+    }
+    let n = ((mots.len() as f64 * (ecoule / duree)).ceil() as usize).clamp(1, mots.len());
+    let mut debut = 0;
+    while debut + 1 < n && mots[debut..n].iter().map(|m| m.chars().count() + 1).sum::<usize>() > max_chars {
+        debut += 1;
+    }
+    format!("{}{}", if debut > 0 { "… " } else { "" }, mots[debut..n].join(" "))
+}
+
 impl Jarvis {
+    /// Jarvis est en train de dire une phrase (elle s'affiche mot par mot).
+    pub fn speaking(&self) -> bool {
+        self.state == "parle" && self.said.is_some_and(|(t, d)| t.elapsed().as_secs_f64() < d)
+    }
+    /// Le texte à montrer : pendant que Jarvis parle, les mots apparaissent au rythme de sa voix.
+    pub fn shown(&self) -> String {
+        let avance = self.said.filter(|_| self.state == "parle").map(|(t, d)| (t.elapsed().as_secs_f64() + 0.1, d));
+        karaoke(&self.text, avance, 70)
+    }
     /// Jarvis fait quelque chose (écoute, réfléchit, parle) depuis moins de 2 minutes, et il est en ligne.
     pub fn active(&self) -> bool {
         self.online() && self.state != "repos" && self.at.is_some_and(|t| t.elapsed().as_secs() < 120)
@@ -575,6 +815,10 @@ pub struct Island {
     /// Défilement dans les pages de détail (en éléments).
     pub scroll: usize,
     pub typing: bool,
+    /// Ce que vise la saisie en cours.
+    pub input_for: InputFor,
+    /// Grande île ouverte à la demande (/ouvrir) : se ferme avec Échap ou un clic en dehors.
+    pub big_force: bool,
     pub input: String,
     pub hidden: bool,
     pub toast: Option<(INotif, Instant)>,
@@ -592,6 +836,8 @@ pub struct Island {
     pub zone: (i32, i32),
     /// Depuis quand la souris est collée en haut, dans la zone.
     pub edge_since: Option<Instant>,
+    /// Montrée par la souris en haut de l'écran alors qu'une fenêtre agrandie la cache.
+    pub peek: bool,
 }
 
 impl Island {
@@ -609,6 +855,8 @@ impl Island {
             sel: None,
             scroll: 0,
             typing: false,
+            input_for: InputFor::Chat,
+            big_force: false,
             input: String::new(),
             hidden: false,
             toast: None,
@@ -621,6 +869,7 @@ impl Island {
             seen: Instant::now(),
             zone: (0, 0),
             edge_since: None,
+            peek: false,
         }
     }
 
@@ -645,7 +894,7 @@ impl Island {
             return false;
         }
         let k = (0.16 * c.anim_speed).clamp(0.03, 0.6);
-        let damp = if c.bounce { 0.62 } else { 0.42 };
+        let damp = if c.bounce { 0.56 } else { 0.50 };
         self.vw = (self.vw + (tw - self.gw) * k) * damp;
         self.vh = (self.vh + (th - self.gh) * k) * damp;
         self.gw += self.vw;
@@ -705,6 +954,48 @@ pub fn fullscreen_app() -> bool {
     }
 }
 
+/// La fenêtre au premier plan est agrandie (ou couvre toute la zone de travail du moniteur principal) ?
+/// Le bureau, la barre des tâches, nos fenêtres, les fenêtres outil, invisibles ou réduites ne comptent pas.
+pub fn maximized_app() -> bool {
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, IsIconic, IsZoomed, WS_EX_TOOLWINDOW};
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.is_null() || IsWindowVisible(h) == 0 || IsIconic(h) != 0 {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, &mut pid);
+        if pid == GetCurrentProcessId() {
+            return false;
+        }
+        if GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0 {
+            return false;
+        }
+        let class = class_of(h);
+        if matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "Windows.UI.Core.CoreWindow" | "NotifyIconOverflowWindow") {
+            return false;
+        }
+        // seulement sur le moniteur où se trouve l'île (le principal)
+        let mon = MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY);
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(mon, &mut mi) == 0 || mi.dwFlags & 1 == 0 {
+            return false;
+        }
+        if IsZoomed(h) != 0 {
+            return true;
+        }
+        let mut r: RECT = std::mem::zeroed();
+        if GetWindowRect(h, &mut r) == 0 {
+            return false;
+        }
+        let wa = mi.rcWork;
+        const TOL: i32 = 8;
+        r.left <= wa.left + TOL && r.top <= wa.top + TOL && r.right >= wa.right - TOL && r.bottom >= wa.bottom - TOL
+    }
+}
+
 unsafe fn class_of(h: HWND) -> String {
     let mut buf = [0u16; 64];
     let n = GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
@@ -746,6 +1037,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn phrase_mot_par_mot() {
+        let t = "Il fait beau aujourd'hui sur toute la région";
+        assert_eq!(karaoke(t, None, 70), t);
+        assert_eq!(karaoke(t, Some((0.0, 4.0)), 70), "Il");
+        assert_eq!(karaoke(t, Some((2.0, 4.0)), 70), "Il fait beau aujourd'hui");
+        assert_eq!(karaoke(t, Some((9.0, 4.0)), 70), t);
+        // trop long pour l'île : on garde les derniers mots dits
+        assert_eq!(karaoke(t, Some((4.0, 4.0)), 20), "… sur toute la région");
+        assert_eq!(karaoke("", Some((1.0, 2.0)), 70), "");
+    }
+
+    #[test]
     fn sortie_vers_le_haut() {
         let c = IleCfg::default();
         let mut s = Island::new(std::ptr::null_mut());
@@ -762,11 +1065,35 @@ mod tests {
     }
 
     #[test]
+    fn ouverture_sans_sursaut_excessif() {
+        let c = IleCfg::default();
+        let mut s = Island::new(std::ptr::null_mut());
+        assert!(!s.step(270.0, 36.0, &c));
+        let mut depassement = 0.0f32;
+        let mut pas = 0;
+        while s.step(820.0, 520.0, &c) {
+            depassement = depassement.max(s.gw - 820.0).max(s.gh - 520.0);
+            pas += 1;
+            assert!(pas < 100, "l'animation ne converge pas");
+        }
+        assert!(depassement < 5.0, "dépassement trop important : {depassement:.1} px");
+    }
+
+    #[test]
     fn nettoyage_discord() {
         let t = "\u{2068}Mormadable\u{2069} (\u{2068}#announcements\u{2069}, Serveur)";
         assert_eq!(crate::sys::clean(t), "Mormadable (#announcements, Serveur)");
         assert!(crate::sys::discord_is_server(t));
         assert!(!crate::sys::discord_is_server("\u{2068}Lucas\u{2069}"));
+    }
+
+    #[test]
+    fn masquage_des_codes() {
+        assert_eq!(mask_codes("Votre code : 482913"), "Votre code : ••••••");
+        assert_eq!(mask_codes("Code 123 456 valable 10 min"), "Code ••• ••• valable 10 min");
+        assert_eq!(mask_codes("G-1234 est ton code"), "G-•••• est ton code");
+        assert_eq!(mask_codes("Rappelle le 0612345678"), "Rappelle le 0612345678");
+        assert_eq!(mask_codes("RDV à 14h30, salle 12"), "RDV à 14h30, salle 12");
     }
 
     #[test]

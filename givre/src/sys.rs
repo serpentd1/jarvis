@@ -91,11 +91,6 @@ pub fn clean(s: &str) -> String {
     s.chars().filter(|c| !matches!(c, '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}')).collect::<String>().trim().to_string()
 }
 
-/// Message d'un serveur Discord (titre « Pseudo (#salon, Serveur) ») et non message privé.
-pub fn discord_is_server(title: &str) -> bool {
-    clean(title).contains("(#")
-}
-
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -475,52 +470,4 @@ pub fn set_menu_theme(dark: bool) {
             f();
         }
     }
-}
-
-// ---------- Petits sons doux (synthétisés, jamais un son système) ----------
-
-fn wav(notes: &[(f32, f32, f32)]) -> Vec<u8> {
-    // (fréquence de départ, fréquence d'arrivée, durée en s)
-    const RATE: u32 = 22050;
-    let mut pcm: Vec<i16> = Vec::new();
-    for &(f0, f1, dur) in notes {
-        let n = (dur * RATE as f32) as usize;
-        let mut ph = 0.0f32;
-        for i in 0..n {
-            let t = i as f32 / n as f32;
-            let f = f0 + (f1 - f0) * t;
-            ph += f / RATE as f32 * std::f32::consts::TAU;
-            let env = (i as f32 / (0.006 * RATE as f32)).min(1.0) * (-4.5 * t).exp();
-            let v = (ph.sin() * 0.75 + (2.0 * ph).sin() * 0.12) * env * 0.11;
-            pcm.push((v * i16::MAX as f32) as i16);
-        }
-    }
-    let data_len = (pcm.len() * 2) as u32;
-    let mut b = Vec::with_capacity(44 + data_len as usize);
-    b.extend_from_slice(b"RIFF");
-    b.extend_from_slice(&(36 + data_len).to_le_bytes());
-    b.extend_from_slice(b"WAVEfmt ");
-    b.extend_from_slice(&16u32.to_le_bytes());
-    b.extend_from_slice(&1u16.to_le_bytes());
-    b.extend_from_slice(&1u16.to_le_bytes());
-    b.extend_from_slice(&RATE.to_le_bytes());
-    b.extend_from_slice(&(RATE * 2).to_le_bytes());
-    b.extend_from_slice(&2u16.to_le_bytes());
-    b.extend_from_slice(&16u16.to_le_bytes());
-    b.extend_from_slice(b"data");
-    b.extend_from_slice(&data_len.to_le_bytes());
-    for s in pcm {
-        b.extend_from_slice(&s.to_le_bytes());
-    }
-    b
-}
-
-/// Son doux : 0 = ouverture de l'île, 1 = notification.
-pub fn soft_sound(kind: usize) {
-    use std::sync::OnceLock;
-    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
-    static SOUNDS: OnceLock<[Vec<u8>; 2]> = OnceLock::new();
-    let s = SOUNDS.get_or_init(|| [wav(&[(620.0, 880.0, 0.09)]), wav(&[(880.0, 880.0, 0.08), (1175.0, 1175.0, 0.12)])]);
-    let b = &s[kind.min(1)];
-    unsafe { PlaySoundW(b.as_ptr() as _, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
 }

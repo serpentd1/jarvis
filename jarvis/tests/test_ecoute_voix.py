@@ -34,7 +34,8 @@ def duree(audio):
 def test_attend_que_je_parle():
     # « Hey Jarvis »… 1, 2, 3… « lance Discord » : il attend 2,5 s sans couper
     audio = faux_micro((SILENCE, 2.5), (VOIX, 1.0), (SILENCE, 3)).enregistrer_commande()
-    assert 4.5 < duree(audio) < 5.2
+    # L'attente avant la voix n'est plus conservée, contrairement au pré-déclencheur de 0,8 s.
+    assert 2.7 < duree(audio) < 3.4
 
 
 def test_pause_au_milieu_de_la_phrase():

@@ -14,6 +14,8 @@ pub enum AiAction {
     OpenInbox,
     Weather,
     Notif(String, String),
+    /// Pouvoir sur le PC (voir pouvoirs.rs) : nom de l'outil, arguments.
+    Pc(String, Value),
 }
 
 /// Requête envoyée au fil réseau.
@@ -33,16 +35,21 @@ pub const MODELS: [&str; 6] = ["qwen3.5:4b", "(modèle des réglages mails)", "q
 pub const STYLES: [&str; 5] = ["Normal", "Très court", "Détaillé", "Pirate", "Majordome (Jarvis)"];
 
 /// Consigne système : rôle + style + données du moment + format des actions.
-pub fn system_prompt(style: usize, context: &str, actions: bool) -> String {
-    let style_txt = match style {
+/// La phrase de style choisie dans les réglages de l'île.
+pub fn style_text(style: usize) -> &'static str {
+    match style {
         1 => "Réponds en une seule phrase très courte.",
         2 => "Réponds de façon complète et claire, en expliquant simplement (6 phrases au maximum).",
         3 => "Parle comme un pirate sympathique (« moussaillon », « mille sabords »), en 3 phrases courtes au maximum.",
         4 => "Tu es Jarvis, un majordome numérique poli et un peu pince-sans-rire ; appelle l'utilisateur « Monsieur » ; 3 phrases courtes au maximum.",
         _ => "Réponds simplement, en 3 phrases courtes au maximum.",
-    };
+    }
+}
+
+pub fn system_prompt(style: usize, context: &str, actions: bool) -> String {
+    let style_txt = style_text(style);
     let mut s = format!(
-        "Tu es l'assistant personnel d'un collégien français, intégré à sa barre « Givre ». Réponds toujours en français. {style_txt} \
+        "Tu es l'assistant personnel d'un collégien français, intégré à l'île Jarvis. Réponds toujours en français. {style_txt} \
 Tes réponses peuvent être lues à voix haute : pas de listes à puces, pas de Markdown, pas d'émojis. \
 Si on te demande une information que tu n'as pas dans les données ci-dessous, dis-le franchement au lieu d'inventer."
     );
@@ -60,8 +67,11 @@ Actions possibles (mets \"actions\": [] si l'utilisateur ne demande rien de conc
 - {\"type\": \"ouvrir_mail\", \"n\": 0} : ouvre le mail numéro n de la liste des données\n\
 - {\"type\": \"ouvrir_pronote\"} ; {\"type\": \"ouvrir_mails\"} ; {\"type\": \"meteo\"} (actualiser la météo)\n\
 - {\"type\": \"notif\", \"titre\": \"…\", \"texte\": \"…\"} : affiche un rappel dans la barre\n\
-Ne déclenche une action que si on te la demande clairement.",
+- {\"type\": \"pc\", \"outil\": \"nom\", \"args\": {…}} : agit sur le PC avec un de ces outils (les actions risquées \
+demandent une confirmation à l'utilisateur ; dis seulement ce que tu lances, pas que c'est fait) :\n",
         );
+        s.push_str(&crate::pouvoirs::resume_outils());
+        s.push_str("\nNe déclenche une action que si on te la demande clairement.");
     }
     s
 }
@@ -102,6 +112,7 @@ pub fn parse(content: &str, json: bool) -> (String, Vec<AiAction>) {
                 a["titre"].as_str().unwrap_or("Rappel").to_string(),
                 a["texte"].as_str().unwrap_or("").to_string(),
             )),
+            "pc" => a["outil"].as_str().filter(|o| !o.is_empty()).map(|o| AiAction::Pc(o.to_string(), a["args"].clone())),
             _ => None,
         };
         acts.extend(act);

@@ -10,17 +10,18 @@ DONNEES = Path(os.environ.get("APPDATA", RACINE)) / "Jarvis"
 
 DEFAUTS = {
     "general": {"nom": "Jarvis", "phrase_demarrage": "Jarvis est prêt.", "lancer_givre": True,
-                "givre_exe": "", "givre_arguments": "--ile"},
+                "givre_exe": "", "givre_arguments": ""},
     "micro": {"appareil": "", "seuil_activation": 0.5, "silence_fin": 1.4, "duree_max": 20,
-              "attente_debut": 6, "conversation": 5, "ding": True, "interrompre": True},
-    "transcription": {"modele": "large-v3-turbo", "appareil": "auto", "precision": "float16"},
+              "attente_debut": 6, "conversation": 5, "conversation_continue": True, "fin_conversation": 60,
+              "volume_conversation": 350, "ding": True, "interrompre": True, "couper_en_parlant": True},
+    "transcription": {"modele": "parakeet", "appareil": "auto", "precision": "float16"},
     "voix": {"voix": "siwis_hd", "modele": "", "lenteur": 1.0, "volume": 1.0},
-    "cerveau": {"ollama_url": "http://127.0.0.1:11434", "modele": "qwen3.5:4b", "historique": 3,
+    "cerveau": {"ollama_url": "http://127.0.0.1:11434", "modele": "qwen3.5:4b", "modele_rapide": "", "historique": 3,
                 "contexte": 8192, "garder_en_memoire": "30m", "temperature": 0.4},
-    "givre": {"url": "http://127.0.0.1:47800"},
+    "givre": {"url": "http://127.0.0.1:47802"},          # la barre de Jarvis (JarvisBarre.exe), pas Givre
     "serveur": {"port": 47801},
     "annonces": {"actif": True, "pronote": True, "mail": True, "discord": True, "minuteur": True,
-                 "ne_pas_deranger": "", "lire_reponses_ile": False},
+                 "telephone": True, "telephone_applis": False, "ne_pas_deranger": "", "lire_reponses_ile": False},
     "discord": {"confirmer_avant_envoi": True, "memoire": 30},
     "meteo": {"ville": ""},
     "deezer": {"utilisateur": ""},
@@ -30,11 +31,17 @@ DEFAUTS = {
 }
 
 
-def ecrire_valeur(section: str, cle: str, valeur: str):
-    """Change une valeur texte dans config.toml en gardant les commentaires (ex : la voix choisie)."""
+def ecrire_valeur(section: str, cle: str, valeur):
+    """Change une valeur dans config.toml (texte, nombre ou oui/non) en gardant les commentaires."""
     import re
     lignes = FICHIER_CONFIG.read_text(encoding="utf-8").splitlines()
-    nouvelle = f'{cle} = "{valeur}"'
+    if isinstance(valeur, bool):
+        litteral = "true" if valeur else "false"
+    elif isinstance(valeur, (int, float)):
+        litteral = repr(valeur)
+    else:
+        litteral = '"' + str(valeur).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    nouvelle = f"{cle} = {litteral}"
     debut = fin = None
     for i, ligne in enumerate(lignes):
         s = ligne.strip()
@@ -58,6 +65,14 @@ def ecrire_valeur(section: str, cle: str, valeur: str):
 def charger() -> dict:
     """Renvoie la config : les valeurs de config.toml, complétées par les défauts."""
     lu = {}
+    # Pas encore de réglages (dépôt tout juste copié) : on part des réglages par défaut, publiés sur GitHub.
+    # config.toml, lui, reste sur ce PC (il contient tes réglages perso : contacts, ville…).
+    defaut = RACINE / "config.defaut.toml"
+    if not FICHIER_CONFIG.exists() and defaut.exists():
+        try:
+            FICHIER_CONFIG.write_bytes(defaut.read_bytes())
+        except OSError:
+            pass
     if FICHIER_CONFIG.exists():
         with open(FICHIER_CONFIG, "rb") as f:
             lu = tomllib.load(f)

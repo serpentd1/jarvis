@@ -77,37 +77,49 @@ class Micro:
         return bloc
 
     def enregistrer_commande(self, silence_fin=1.4, duree_max=20, attente_debut=6,
-                             ignorer_debut=0.3, voix_min=0.24) -> np.ndarray:
+                             ignorer_debut=0.3, voix_min=0.24, volume_min=150.0, prefixe=None) -> np.ndarray:
         """Enregistre ta phrase. Renvoie du float32 16 kHz (vide si tu n'as rien dit).
 
-        - attend jusqu'à `attente_debut` s que tu commences à parler ;
-        - « tu parles » = au moins `voix_min` s de son continu (un clic ou le « ding » ne comptent pas),
-          sans compter les `ignorer_debut` premières secondes (le temps du « ding ») ;
-        - s'arrête après `silence_fin` s de silence : tu peux faire de petites pauses en parlant.
+        - attend jusqu'à `attente_debut` s que tu commences à parler (seul le son juste avant ta voix est
+          gardé : une longue attente ne ralentit pas la transcription) ;
+        - « tu parles » = au moins `voix_min` s de son plus fort que `volume_min` et que le bruit de fond
+          (un clic ou le « ding » ne comptent pas), sans compter les `ignorer_debut` premières secondes ;
+        - s'arrête après `silence_fin` s de silence (tu peux faire de petites pauses) ou `duree_max` s de parole.
         """
         fond = float(np.median(self.bruit)) if self.bruit else 200.0
-        seuil = max(fond * 3, 150.0)
+        seuil = max(fond * 3, volume_min)
         duree_bloc = BLOC / FREQ
-        blocs, parle, silence, temps, continu = [], False, 0.0, 0.0, 0.0
-        while temps < duree_max:
+        avant = deque(maxlen=max(1, int(0.8 / duree_bloc)))
+        # `prefixe` : les ~2 s juste avant « Hey Jarvis ». S'il y a déjà une phrase dedans (« mets pause, Jarvis »),
+        # on n'attend presque pas la suite.
+        prefixe = list(prefixe or [])
+        deja_dit = sum(duree_bloc for b in prefixe if niveau(b) > seuil) >= 1.3
+        if deja_dit:
+            attente_debut = min(attente_debut, 1.0)
+        blocs, parle, silence, temps, continu, parole = [], False, 0.0, 0.0, 0.0, 0.0
+        while True:
             bloc = self.bloc()
             if bloc is None:
                 break
-            blocs.append(bloc)
             temps += duree_bloc
             fort = niveau(bloc) > seuil
             if not parle:
+                avant.append(bloc)
                 continu = continu + duree_bloc if fort and temps > ignorer_debut else 0.0
                 if continu >= voix_min:
-                    parle = True
+                    parle, blocs = True, prefixe + list(avant)
                 elif temps > attente_debut:
                     break
             else:
+                blocs.append(bloc)
+                parole += duree_bloc
                 silence = 0.0 if fort else silence + duree_bloc
-                if silence >= silence_fin:
+                if silence >= silence_fin or parole >= duree_max:
                     break
         if not parle:
-            return np.zeros(0, dtype=np.float32)
+            if not deja_dit:
+                return np.zeros(0, dtype=np.float32)
+            blocs = prefixe
         return np.concatenate(blocs).astype(np.float32) / 32768.0
 
 
@@ -115,11 +127,23 @@ def niveau(bloc: np.ndarray) -> float:
     return float(np.sqrt(np.mean(bloc.astype(np.float32) ** 2)))
 
 
-def ding(volume: float = 0.25, aigu: bool = False):
-    """Petit son « je t'écoute » (plus aigu quand Jarvis attend une réponse oui/non)."""
-    t = np.linspace(0, 0.12, int(22050 * 0.12), endpoint=False)
-    f1, f2 = (1320, 1760) if aigu else (880, 1320)
-    son = np.concatenate([np.sin(2 * np.pi * f1 * t), np.sin(2 * np.pi * f2 * t)])
-    enveloppe = np.minimum(1, np.minimum(np.arange(len(son)), np.arange(len(son))[::-1]) / 400)
-    sd.play((son * enveloppe * volume).astype(np.float32), 22050)
+def son_ding(aigu: bool = False, volume: float = 0.22):
+    """Le « pou-poum » : deux notes graves et rondes, qui s'éteignent doucement (pas de bip aigu)."""
+    freq = 22050
+
+    def note(hauteur: float, duree: float):
+        t = np.linspace(0, duree, int(freq * duree), endpoint=False)
+        onde = np.sin(2 * np.pi * hauteur * t) + 0.25 * np.sin(2 * np.pi * 2 * hauteur * t)
+        attaque = np.minimum(1, t / 0.012)                 # montée douce : pas de « clac »
+        return onde * attaque * np.exp(-t * 14)            # puis ça s'éteint tout seul, comme un xylophone en bois
+
+    f1, f2 = (392, 523) if aigu else (294, 392)            # question oui/non : un peu plus haut
+    silence = np.zeros(int(freq * 0.03))
+    son = np.concatenate([note(f1, 0.13), silence, note(f2, 0.24)])
+    return (son / 1.25 * volume).astype(np.float32), freq
+
+
+def ding(volume: float = 0.22, aigu: bool = False):
+    """Petit son « je t'écoute » (un peu plus haut quand Jarvis attend une réponse oui/non)."""
+    sd.play(*son_ding(aigu, volume))
     sd.wait()

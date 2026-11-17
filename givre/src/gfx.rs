@@ -126,8 +126,6 @@ pub enum Wt {
     Semibold = 2,
 }
 
-pub const FONT_NAMES: [&str; 9] = ["Segoe UI", "Bahnschrift", "Comic Sans", "Consolas", "Georgia", "Trebuchet", "Verdana", "Segoe Print", "Arial"];
-
 pub struct Fonts {
     f: Vec<FontVec>,
 }
@@ -147,31 +145,6 @@ impl Fonts {
                 pick(&["seguisb.ttf", "segoeuib.ttf", "arialbd.ttf", "arial.ttf"])?,
             ],
         })
-    }
-
-    /// Police choisie pour la Dynamic Island (voir FONT_NAMES). Graisse manquante : Segoe UI.
-    pub fn load_family(i: usize) -> Option<Fonts> {
-        const FILES: [[&str; 3]; 9] = [
-            ["segoeuil.ttf", "segoeui.ttf", "seguisb.ttf"],
-            ["bahnschrift.ttf", "bahnschrift.ttf", "bahnschrift.ttf"],
-            ["comic.ttf", "comic.ttf", "comicbd.ttf"],
-            ["consola.ttf", "consola.ttf", "consolab.ttf"],
-            ["georgia.ttf", "georgia.ttf", "georgiab.ttf"],
-            ["trebuc.ttf", "trebuc.ttf", "trebucbd.ttf"],
-            ["verdana.ttf", "verdana.ttf", "verdanab.ttf"],
-            ["segoepr.ttf", "segoepr.ttf", "segoeprb.ttf"],
-            ["arial.ttf", "arial.ttf", "arialbd.ttf"],
-        ];
-        let base = Fonts::load()?;
-        let Some(files) = FILES.get(i).filter(|_| i > 0) else { return Some(base) };
-        let dir = std::path::PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into())).join("Fonts");
-        let mut f = base.f;
-        for (k, name) in files.iter().enumerate() {
-            if let Some(v) = std::fs::read(dir.join(name)).ok().and_then(|b| FontVec::try_from_vec(b).ok()) {
-                f[k] = v;
-            }
-        }
-        Some(Fonts { f })
     }
 
     fn scale(&self, w: Wt, size: f32) -> PxScale {

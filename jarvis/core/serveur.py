@@ -12,6 +12,9 @@
   POST /voix {"nom"}              change de voix (téléchargée si besoin)
   POST /selection {"type":"mail","n","de","sujet"}   ce que tu regardes dans l'île
   GET  /extension                 WebSocket de l'extension Chrome
+  POST /cerveau/…                 registre pour le cerveau Rust de la barre (cerveau.rs) : avant {"texte"},
+                                  outils, outil {"nom","args"}, confirmer {"id"}, contexte {"question"},
+                                  apres {"question","reponse"}
 
 Sécurité : une page web ne peut pas piloter Jarvis (en-tête Origin refusé, sauf l'extension).
 """
@@ -50,7 +53,9 @@ class Serveur:
             web.post("/dire", self._dire), web.post("/quitter", self._quitter), web.post("/redemarrer", self._redemarrer),
             web.get("/voix", self._voix), web.post("/voix", self._choisir_voix),
             web.post("/selection", self._selection),
+            web.get("/api/{nom}", self._api), web.post("/api/{nom}", self._api),
             web.get("/extension", self._extension),
+            web.post("/cerveau/{quoi}", self._cerveau),
         ])
         lanceur = web.AppRunner(appli, access_log=None)
         try:
@@ -149,6 +154,44 @@ class Serveur:
         d = await self._json(requete)
         self.etat.selection = {**d, "t": time.time()} if d.get("type") else None
         return web.json_response({"ok": True})
+
+    # ── données de l'appli (la grande île de Givre les lit et les modifie) ──
+    async def _api(self, requete):
+        cerveau = self.obtenir_cerveau()
+        fonction = cerveau.reg.apis.get(requete.match_info["nom"]) if cerveau else None
+        if not fonction:
+            return web.json_response({"ok": False, "erreur": "inconnu ou Jarvis démarre encore"}, status=404)
+        donnees = await self._json(requete) if requete.method == "POST" else dict(requete.query)
+        try:
+            resultat = await asyncio.get_running_loop().run_in_executor(None, fonction, requete.method, donnees)
+        except Exception as e:  # noqa: BLE001
+            log.exception("api %s", requete.match_info["nom"])
+            return web.json_response({"ok": False, "erreur": str(e)}, status=500)
+        return web.json_response(resultat if isinstance(resultat, dict) else {"ok": True, "donnees": resultat})
+
+    async def _cerveau(self, requete):
+        """Le cerveau Rust (dans la barre) lit et appelle ici les outils, raccourcis et données des modules."""
+        cerveau = self.obtenir_cerveau()
+        if cerveau is None:
+            return web.json_response({"ok": False, "erreur": "Jarvis démarre encore"}, status=503)
+        d = await self._json(requete)
+        quoi = requete.match_info["quoi"]
+        actions = {
+            "avant": lambda: cerveau.avant(str(d.get("texte", ""))),
+            "outils": lambda: {"outils": cerveau.reg.schemas()},
+            "outil": lambda: cerveau.executer_outil(str(d.get("nom", "")), d.get("args") or {}),
+            "confirmer": lambda: cerveau.confirmer(d.get("id") or 0),
+            "contexte": lambda: {"texte": cerveau._contexte(str(d.get("question", "")))},
+            "apres": lambda: cerveau.apres_echange(str(d.get("question", "")), str(d.get("reponse", ""))) or {},
+        }
+        if quoi not in actions:
+            return web.json_response({"ok": False, "erreur": "route inconnue"}, status=404)
+        try:
+            resultat = await asyncio.get_running_loop().run_in_executor(None, actions[quoi])
+        except Exception as e:  # noqa: BLE001
+            log.exception("cerveau/%s", quoi)
+            return web.json_response({"ok": False, "erreur": str(e)}, status=500)
+        return web.json_response({"ok": True, **resultat})
 
     async def _redemarrer(self, _r):
         """Relit config.toml et recharge tout (Jarvis.exe relance le moteur)."""

@@ -33,6 +33,22 @@ fn alerte(texte: &str) {
     }
 }
 
+/// Demande à la barre de Jarvis (127.0.0.1:47802) d'ouvrir la grande île. Sans réponse : rien.
+fn ouvrir_grande_ile() {
+    use std::io::Write;
+    let corps = r#"{"quoi":"grande","section":"accueil"}"#;
+    let adresse = std::net::SocketAddr::from(([127, 0, 0, 1], 47802));
+    if let Ok(mut flux) = std::net::TcpStream::connect_timeout(&adresse, Duration::from_secs(2)) {
+        let _ = flux.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = write!(
+            flux,
+            "POST /ouvrir HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{corps}",
+            corps.len()
+        );
+        let _ = std::io::Read::read(&mut flux, &mut [0u8; 256]);
+    }
+}
+
 fn creer_job() -> Option<HANDLE> {
     unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -55,7 +71,9 @@ fn main() {
     unsafe {
         CreateMutexW(std::ptr::null(), 0, large("Local\\Jarvis-lanceur").as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
-            return; // Jarvis tourne déjà
+            // Jarvis tourne déjà : un double-clic sur le raccourci ouvre la grande île au lieu de ne rien faire
+            ouvrir_grande_ile();
+            return;
         }
     }
     let dossier = std::env::current_exe()

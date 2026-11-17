@@ -16,7 +16,9 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
 
 Etape "Python 3.12 et bibliothèques (environ 1,5 Go)"
 if (-not (Test-Path .venv\Scripts\python.exe)) { uv venv --python 3.12 .venv }
+uv pip uninstall --python .venv\Scripts\python.exe -y onnxruntime
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+uv pip install --reinstall --python .venv\Scripts\python.exe onnxruntime-gpu==1.22.0
 
 Etape "Modèles de voix et d'écoute (environ 1,7 Go)"
 .venv\Scripts\python.exe outils\telecharger_modeles.py

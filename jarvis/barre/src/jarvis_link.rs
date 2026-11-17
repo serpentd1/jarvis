@@ -109,14 +109,17 @@ pub fn launch(manual: &str) {
     }
 }
 
-/// Redémarre Jarvis : demande d'arrêt, petite attente, puis relance.
+/// Redémarre Jarvis (la voix) sans fermer l'appli : POST /redemarrer (Jarvis.exe relance le moteur).
+/// S'il ne revient pas (ou ne répondait pas), on le relance nous-mêmes.
 pub fn restart(manual: String) {
     std::thread::spawn(move || {
-        let _ = post("/quitter", json!({}), 5);
-        for _ in 0..20 {
-            std::thread::sleep(Duration::from_millis(500));
-            if status().is_none() {
-                break;
+        if post("/redemarrer", json!({}), 5).is_ok() {
+            std::thread::sleep(Duration::from_secs(3));
+            for _ in 0..20 {
+                if status().is_some() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
             }
         }
         launch(&manual);

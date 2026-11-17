@@ -104,10 +104,6 @@ pub enum Action {
     OpenMail(u16),
     /// Ouvrir la boîte de réception Gmail.
     OpenInbox,
-    /// Bouton propre à la Dynamic Island (voir island.rs).
-    Ile(u8),
-    /// Bouton de l'île avec un numéro (devoir n, mail n, minuteur n…).
-    IleN(u8, u16),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -128,7 +124,7 @@ pub struct Ctx<'a> {
     pub ox: f32,
     pub oy: f32,
     pub hits: Vec<Hit>,
-    /// Facteur de taille du texte (1 = normal) et texte plus gras (Dynamic Island).
+    /// Facteur de taille du texte (1 = normal) et texte plus gras.
     pub tf: f32,
     pub bold: bool,
 }

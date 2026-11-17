@@ -25,9 +25,9 @@ def en_base64(image) -> str:
 def installer(ctx, reg):
     cfg = ctx.cfg["cerveau"]
 
-    def voir(consigne: str, image, temperature: float = 0.3) -> str | None:
+    def voir(consigne: str, image, temperature: float = 0.3, max_jetons: int = 300) -> str | None:
         corps = {"model": cfg["modele"], "stream": False, "think": False, "keep_alive": cfg["garder_en_memoire"],
-                 "options": {"temperature": temperature, "num_ctx": int(cfg["contexte"]), "num_predict": 300},
+                 "options": {"temperature": temperature, "num_ctx": int(cfg["contexte"]), "num_predict": max_jetons},
                  "messages": [{"role": "user", "content": consigne, "images": [en_base64(image)]}]}
         try:
             r = requests.post(f"{cfg['ollama_url'].rstrip('/')}/api/chat", json=corps, timeout=120)
@@ -38,6 +38,8 @@ def installer(ctx, reg):
         except Exception:  # noqa: BLE001
             log.exception("vision")
             return None
+
+    ctx.voir = voir          # aussi pour lire une leçon à l'écran (modules/lecons.py)
 
     def regarder_ecran(question: str = ""):
         image = controle.capture()
@@ -89,7 +91,8 @@ def installer(ctx, reg):
 
     reg.regle(r"\b(regarde|analyse|decris|lis|explique)\b.*\b(ecran|video|image|page|photo|ca)\b|"
               r"\b(sur|a) (mon |l'|l |cet |l')?ecran\b|^(?:qu'est ce que|c'est quoi) (?:je vois|ca|que je vois)$|"
-              r"\btu vois (quoi|ce que|ce qu'il)",
+              r"\btu vois (quoi|ce que|ce qu'il)|"
+              r"\b(?:photo|capture|screen|screenshot|copie)\b(?: d'?\s?ecran\b| (?:de|d') (?:mon |l'|l |cet )?ecran\b)",
               lambda m, t: [("regarder_ecran", {"question": t})], priorite=22)
     reg.regle(r"^(?:double )?(?:clique|clic|cliquer|clique droit)(?: moi)? (?:sur|dans) (?P<el>.+)$",
               lambda m, t: [("cliquer_sur", {"element": re.split(r"\bsur\b|\bdans\b", t, maxsplit=1)[-1].strip(" .!?"),

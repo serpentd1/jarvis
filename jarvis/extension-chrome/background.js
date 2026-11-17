@@ -60,12 +60,58 @@ chrome.runtime.onMessage.addListener((msg) => {
 // ── commandes de Jarvis ─────────────────────────────────────
 async function traiter(m) {
   if (m.commande === "video") return await commandeVideo(m);
-  if (m.commande === "discord_envoyer") return await commandeDiscord(m);
+  if (m.commande === "discord_envoyer" || m.commande === "discord_appeler") return await commandeDiscord(m);
   if (m.commande === "onglets") {
     const onglets = await chrome.tabs.query({});
     return { ok: true, onglets: onglets.map((o) => ({ titre: o.title, url: o.url, son: o.audible })) };
   }
+  if (m.commande === "onglet_aller" || m.commande === "onglet_fermer" || m.commande === "onglet_doublons") {
+    return await commandeOnglet(m);
+  }
   return { ok: false, erreur: "commande inconnue : " + m.commande };
+}
+
+// ── onglets : « ferme l'onglet Pronote », « remets-moi sur YouTube », « ferme les onglets en double » ──
+function cle(s) {
+  return (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, "");
+}
+
+function correspond(onglet, cherche) {
+  const c = cle(cherche);
+  return !!c && (cle(onglet.title).includes(c) || cle(onglet.url).includes(c));
+}
+
+// L'onglet affiché d'abord, puis le plus récemment utilisé.
+function plusRecentDabord(a, b) {
+  return (b.active - a.active) || ((b.lastAccessed || 0) - (a.lastAccessed || 0));
+}
+
+async function commandeOnglet(m) {
+  const tous = (await chrome.tabs.query({})).filter((o) => /^(https?|file):/.test(o.url || "")).sort(plusRecentDabord);
+  if (m.commande === "onglet_doublons") {
+    const vus = new Set();
+    const aFermer = [];
+    for (const o of tous) {
+      const adresse = (o.url || "").split("#")[0];
+      if (vus.has(adresse)) aFermer.push(o.id);
+      else vus.add(adresse);
+    }
+    if (aFermer.length) await chrome.tabs.remove(aFermer);
+    return { ok: true, fermes: aFermer.length };
+  }
+  const trouves = tous.filter((o) => correspond(o, m.cherche));
+  if (!trouves.length) return { ok: false, erreur: "aucun onglet", trouves: 0 };
+  if (m.commande === "onglet_aller") {
+    const o = trouves[0];
+    await chrome.tabs.update(o.id, { active: true });
+    const fenetre = await chrome.windows.get(o.windowId);
+    await chrome.windows.update(o.windowId, fenetre.state === "minimized" ? { state: "normal", focused: true } : { focused: true });
+    return { ok: true, titre: o.title };
+  }
+  // onglet_fermer : tous ceux qui correspondent, ou tous sauf le plus récent (« garde un seul YouTube »)
+  const aFermer = (m.garder_un ? trouves.slice(1) : trouves).map((o) => o.id);
+  if (aFermer.length) await chrome.tabs.remove(aFermer);
+  return { ok: true, fermes: aFermer.length, garde: m.garder_un ? trouves[0].title : "" };
 }
 
 async function commandeVideo(m) {
@@ -90,7 +136,7 @@ async function commandeDiscord(m) {
   const onglets = await chrome.tabs.query({ url: "https://discord.com/*" });
   if (!onglets.length) return { ok: false, erreur: "aucun onglet Discord ouvert dans Chrome" };
   try {
-    return await chrome.tabs.sendMessage(onglets[0].id, { type: "discord_envoyer", destinataire: m.destinataire, texte: m.texte });
+    return await chrome.tabs.sendMessage(onglets[0].id, { type: m.commande, destinataire: m.destinataire, texte: m.texte });
   } catch (e) {
     return { ok: false, erreur: "recharge l'onglet Discord (F5) pour activer l'extension" };
   }

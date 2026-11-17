@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import date
 
-from . import Resultat, normaliser
+from . import Resultat, masquer_codes, normaliser
 
 log = logging.getLogger("givre_infos")
 JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
@@ -46,6 +46,19 @@ def est_message_prive(de: str) -> bool:
     return "(#" not in nettoyer_nom(de).replace("( #", "(#")
 
 
+def element_telephone(t: dict) -> str:
+    """Un SMS, appel ou notification du téléphone, pour l'IA (codes de vérification masqués)."""
+    genre, de, heure = t.get("type", ""), nettoyer_nom(t.get("de")), t.get("heure", "")
+    texte = masquer_codes(nettoyer_nom(t.get("texte", "")))[:120]
+    if genre == "appel":
+        return f"{heure} {texte.lower() or 'appel'} de {de}"
+    if genre == "batterie":
+        return f"{heure} batterie du téléphone faible ({texte})"
+    if genre == "appli":
+        return f"{heure} notification {t.get('appli') or 'd’une appli'} de {masquer_codes(de)} : « {texte} »"
+    return f"{heure} SMS de {de} : « {texte} »"
+
+
 def resume(e: dict) -> str:
     """État de Givre -> texte court et lisible pour l'IA."""
     L = [f"Aujourd'hui : {e.get('jour', '')}, il est {e.get('heure', '')}."]
@@ -67,7 +80,11 @@ def resume(e: dict) -> str:
 
     p = e.get("pronote") or {}
     if p.get("connecte"):
-        L.append(f"PRONOTE (élève {p.get('eleve', '')}, {p.get('classe', '')}, mis à jour à {p.get('mis_a_jour') or '?'}) :")
+        L.append(f"PRONOTE (élève {p.get('eleve', '')}, {p.get('classe', '')}, mis à jour : {p.get('mis_a_jour') or '?'}) :")
+        if p.get("erreur"):
+            L.append(f"  ATTENTION : la connexion à Pronote ne marche plus ({p['erreur']}). Les données ci-dessous datent "
+                     f"de la dernière mise à jour ({p.get('mis_a_jour') or '?'}) et peuvent être fausses aujourd'hui. "
+                     "Pour la refaire : clic droit sur la barre, Paramètres, Comptes, Pronote (QR code).")
         pc = p.get("prochain_cours")
         if pc:
             L.append(f"  Prochain cours : {pc.get('matiere')} à {pc.get('debut')} ({pc.get('dans', '')}).")
@@ -90,22 +107,29 @@ def resume(e: dict) -> str:
         else:
             L.append("  Devoirs : rien à faire.")
         notes = p.get("notes") or []
-        if notes:
+        if p.get("notes_masquees"):
+            L.append("  Notes : l'utilisateur a choisi de masquer ses notes. N'en parle pas et ne donne aucune note "
+                     "ni moyenne, même si on te le demande : dis-lui qu'elles sont masquées dans les réglages de l'île.")
+        elif notes:
             L.append("  Dernières notes (de la plus récente à la plus ancienne) : " + " ; ".join(
                 f"{n.get('matiere')} : {note_fr(n.get('note'))}"
                 + (f" (moyenne de la classe {n['moyenne_classe']})" if n.get("moyenne_classe") else "")
                 + f", le {date_fr(n.get('date'))}" for n in notes) + ".")
-        if p.get("moyenne_generale"):
+        if not p.get("notes_masquees") and p.get("moyenne_generale"):
             L.append(f"  Moyenne générale : {p['moyenne_generale']}.")
         for msg in (p.get("messages_non_lus") or [])[:5]:
             L.append(f"  Message Pronote non lu de {msg.get('de')} : « {msg.get('sujet')} » ({msg.get('quand', '')}).")
         for act in (p.get("actualites_non_lues") or [])[:3]:
             L.append(f"  Actualité non lue : « {act.get('titre')} » de {act.get('de')} : {str(act.get('texte', ''))[:150]}")
+    elif p.get("desactive"):
+        L.append("PRONOTE : désactivé par l'utilisateur. N'en parle pas et ne propose pas de le connecter.")
     else:
         L.append("PRONOTE : pas connecté dans la barre Givre.")
 
     mails = e.get("mails")
-    if isinstance(mails, dict) and not mails.get("connecte", True):
+    if isinstance(mails, dict) and mails.get("desactive"):
+        L.append("MAILS : désactivés par l'utilisateur. N'en parle pas et ne propose pas de les connecter.")
+    elif isinstance(mails, dict) and not mails.get("connecte", True):
         L.append("MAILS : aucun compte connecté dans la barre Givre.")
     elif mails:
         L.append(f"MAILS IMPORTANTS ({e.get('mails_non_lus', len(mails))} mails non lus en tout) :")
@@ -135,6 +159,14 @@ def resume(e: dict) -> str:
             for d in discord[:6]) + ".")
     elif e.get("discord_non_lus_chrome"):
         L.append(f"DISCORD : {e['discord_non_lus_chrome']} message(s) non lu(s) dans Chrome.")
+
+    tel = e.get("telephone")
+    if isinstance(tel, list) and tel:
+        L.append("TÉLÉPHONE (reçu par « Mobile connecté », du plus récent au plus ancien) : "
+                 + " ; ".join(element_telephone(t) for t in tel[:8]) + ".")
+    elif isinstance(tel, dict):
+        L.append("TÉLÉPHONE : rien reçu (le téléphone n'est pas relié par « Mobile connecté », "
+                 "ou ses notifications ne sont pas activées).")
     return "\n".join(L)
 
 
@@ -158,6 +190,28 @@ def installer(ctx, reg):
 
     def actualiser_meteo():
         return Resultat("Je mets la météo à jour." if givre.actualiser_meteo() else "La barre Givre n'est pas lancée.")
+
+    def etat_pronote():
+        e = givre.etat() or {}
+        p = e.get("pronote") or {}
+        if not e.get("ok"):
+            return Resultat("Ma barre n'est pas lancée, donc je n'ai pas accès à Pronote.", ok=False)
+        if p.get("desactive"):
+            return Resultat("Pronote est désactivé. Pour le remettre : grande île, page Comptes, bouton Réactiver.")
+        if not p.get("connecte"):
+            return Resultat("Non, Pronote n'est pas connecté. Fais un clic droit sur la barre, puis Paramètres, Comptes, "
+                            "Pronote.", ok=False)
+        if p.get("erreur"):
+            return Resultat(f"Pas vraiment : la connexion à Pronote ne marche plus, mes infos datent du "
+                            f"{p.get('mis_a_jour')}. Refais le QR code : clic droit sur la barre, puis Paramètres, Comptes, "
+                            "Pronote.", ok=False)
+        return Resultat(f"Oui, je suis connecté à Pronote. Dernière mise à jour : {p.get('mis_a_jour')}.")
+
+    reg.outil("etat_pronote", "Dit si Pronote est bien connecté.", {}, [], etat_pronote)
+    reg.cacher_a_ia("etat_pronote")
+    reg.regle(r"^(?:es tu|t'es|tu es|est ce que tu es) (?:bien )?connecte (?:a|sur|avec) pronote$"
+              r"|^(?:est ce que )?pronote (?:marche|fonctionne|est connecte)(?: bien)?$",
+              lambda m, t: [("etat_pronote", {})], priorite=25)
 
     reg.contexte(contexte)
     reg.outil("ouvrir_givre", "Ouvre à l'écran Pronote, la boîte mail, un mail précis ou la liste des devoirs "

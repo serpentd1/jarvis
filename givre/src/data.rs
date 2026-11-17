@@ -165,10 +165,6 @@ pub enum Job {
     MsAdd(String),
     MsDel,
     CreateEvent(String, NaiveDate, Option<chrono::NaiveTime>, i64),
-    /// Question à Ollama (île ou Jarvis).
-    Ask(crate::brain::AskReq),
-    /// Corps complet d'un mail (client Hotmail pour Outlook).
-    MailBody(Mail, String),
 }
 
 pub enum Msg {
@@ -191,14 +187,6 @@ pub enum Msg {
     School(crate::pronote::School),
     /// Notification Pronote : 0 note, 1 devoir, 2 cours annulé.
     PNotify(u8, String, String),
-    /// Réponse d'Ollama (n° de la question, texte brut ou erreur).
-    Answer(u64, Result<String, String>),
-    /// Requête de l'API locale (Jarvis) ; la réponse (code HTTP, JSON) part dans le canal.
-    Api(crate::api::ApiReq, std::sync::mpsc::Sender<(u16, String)>),
-    /// État de Jarvis (GET :47801/etat) : None = il ne répond pas.
-    JarvisLink(Option<(String, bool)>),
-    /// Corps d'un mail (identifiant, texte ou erreur).
-    MailBody(String, Result<String, String>),
 }
 
 /// Envoie un message à la fenêtre principale et la réveille.
@@ -285,15 +273,6 @@ pub fn spawn(main: isize, vault: Arc<Mutex<accounts::Secrets>>) -> (Sender<Job>,
                         Err(e) => o.send(Msg::Status(e)),
                     }
                     o.send(Msg::Changed);
-                }
-                Job::MailBody(m, client) => {
-                    let (v, o2) = (vault.clone(), o.clone());
-                    std::thread::spawn(move || o2.send(Msg::MailBody(m.id.clone(), accounts::mail_body(&agent(), &v, &client, &m))));
-                }
-                Job::Ask(r) => {
-                    // fil à part : une réponse peut prendre une minute, la météo ne doit pas attendre
-                    let o2 = o.clone();
-                    std::thread::spawn(move || o2.send(Msg::Answer(r.id, accounts::ollama_ask(&r))));
                 }
             }
         }

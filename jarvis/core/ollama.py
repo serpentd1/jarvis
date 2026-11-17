@@ -19,12 +19,14 @@ def repond(url: str) -> bool:
         return False
 
 
-def discuter(cfg: dict, messages: list, temperature: float = 0.3, max_mots: int = 300):
+def discuter(cfg: dict, messages: list, temperature: float = 0.3, max_mots: int = 300, json_seulement: bool = False):
     """Une question simple à l'IA, sans outils (résumés, explications). Renvoie le texte, ou None."""
     import re
     corps = {"model": cfg["modele"], "messages": messages, "stream": False, "think": False,
              "keep_alive": cfg["garder_en_memoire"],
              "options": {"temperature": temperature, "num_ctx": int(cfg["contexte"]), "num_predict": max_mots}}
+    if json_seulement:
+        corps["format"] = "json"
     try:
         r = requests.post(f"{cfg['ollama_url'].rstrip('/')}/api/chat", json=corps, timeout=120)
         r.raise_for_status()

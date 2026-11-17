@@ -22,19 +22,19 @@ const GRADS: [([u8; 3], [u8; 3]); 7] = [
     ([70, 12, 16], [226, 56, 56]),
 ];
 
-const TOP: f32 = 40.0;
-const PAD: f32 = 12.0;
-const CARD_H: f32 = 222.0;
+pub(crate) const TOP: f32 = 40.0;
+pub(crate) const PAD: f32 = 12.0;
+pub(crate) const CARD_H: f32 = 222.0;
 
 /// Position de la souris en coordonnées logiques du contenu (pour le survol).
-fn mouse(c: &Ctx, r: &R) -> (f32, f32) {
+pub(crate) fn mouse(c: &Ctx, r: &R) -> (f32, f32) {
     let x = (r.mouse.0 - r.st.win.0) as f32;
     let y = (r.mouse.1 - r.st.win.1) as f32;
     ((x - c.ox) / c.s, (y - c.oy) / c.s)
 }
 
 /// Rectangle arrondi avec un dégradé vertical.
-fn vgrad(c: &mut Ctx, x: f32, y: f32, w: f32, h: f32, rad: f32, top: Rgba, bot: Rgba) {
+pub(crate) fn vgrad(c: &mut Ctx, x: f32, y: f32, w: f32, h: f32, rad: f32, top: Rgba, bot: Rgba) {
     let (px, py) = (c.ox + x * c.s, c.oy + y * c.s);
     let Some(path) = gfx::rrect(px, py, w * c.s, h * c.s, rad * c.s, true) else { return };
     let Some(sh) = LinearGradient::new(
@@ -53,7 +53,7 @@ fn vgrad(c: &mut Ctx, x: f32, y: f32, w: f32, h: f32, rad: f32, top: Rgba, bot: 
 }
 
 /// Image qui remplit le rectangle (recadrée, sans déformation).
-fn cover(c: &mut Ctx, img: &Pixmap, x: f32, y: f32, w: f32, h: f32, rad: f32) {
+pub(crate) fn cover(c: &mut Ctx, img: &Pixmap, x: f32, y: f32, w: f32, h: f32, rad: f32) {
     let (px, py, pw, ph) = (c.ox + x * c.s, c.oy + y * c.s, w * c.s, h * c.s);
     let Some(path) = gfx::rrect(px, py, pw, ph, rad * c.s, true) else { return };
     let (iw, ih) = (img.width() as f32, img.height() as f32);
@@ -66,13 +66,59 @@ fn cover(c: &mut Ctx, img: &Pixmap, x: f32, y: f32, w: f32, h: f32, rad: f32) {
 }
 
 /// Petites capitales espacées (titres de cartes).
-fn caps(c: &mut Ctx, x: f32, y: f32, col: Rgba, s: &str) -> f32 {
+pub(crate) fn caps(c: &mut Ctx, x: f32, y: f32, col: Rgba, s: &str) -> f32 {
     c.text_t(Wt::Semibold, 11.0, x, y, col, &s.to_uppercase(), 1.6)
 }
 
 // ---------- Icônes (fines, dessinées) ----------
 
+/// Glyphe de la police d'icônes de Windows pour un onglet.
+pub fn glyph(t: Tab) -> char {
+    match t {
+        Tab::Home => '\u{E80F}',
+        Tab::Jarvis => '\u{E99A}',
+        Tab::Music => '\u{E8D6}',
+        Tab::Discord => '\u{E8F2}',
+        Tab::Timers => '\u{E916}',
+        Tab::Dnd => '\u{E708}',
+        Tab::Notifs => '\u{E7E7}',
+        Tab::Clips => '\u{E8C8}',
+        Tab::School => '\u{E7BE}',
+        Tab::Calendar => '\u{E787}',
+        Tab::Mails => '\u{E715}',
+        Tab::Phone => '\u{E8EA}',
+        Tab::Tasks => '\u{E9D5}',
+        Tab::Reminders => '\u{EA8F}',
+        Tab::Habits => '\u{E930}',
+        Tab::Routines => '\u{E8EE}',
+        Tab::Memory => '\u{E8F1}',
+        Tab::Pc => '\u{E7F4}',
+        Tab::Batteries => '\u{E83F}',
+        Tab::JSettings => '\u{E713}',
+        Tab::Accounts => '\u{E77B}',
+    }
+}
+
+/// Dessine un glyphe de la police d'icônes, centré. `false` si la police manque.
+pub fn glyph_at(c: &mut Ctx, ch: char, cx: f32, cy: f32, size: f32, col: Rgba) -> bool {
+    let Some(f) = crate::gfx::Fonts::icons() else { return false };
+    let s = ch.to_string();
+    let px = size * c.s;
+    let w = f.measure(Wt::Regular, px, &s, 0.0);
+    let (x, y) = (c.ox + cx * c.s - w / 2.0, c.oy + cy * c.s + px * 0.5);
+    f.draw(c.pm, Wt::Regular, px, x, y, col, &s, 0.0, 1.0);
+    true
+}
+
 pub fn icon(c: &mut Ctx, t: Tab, cx: f32, cy: f32, col: Rgba) {
+    if glyph_at(c, glyph(t), cx, cy, 16.0, col) {
+        return;
+    }
+    icon_drawn(c, t, cx, cy, col);
+}
+
+/// Icônes dessinées (si la police d'icônes de Windows est absente).
+pub fn icon_drawn(c: &mut Ctx, t: Tab, cx: f32, cy: f32, col: Rgba) {
     let lw = 1.6;
     match t {
         Tab::Home => {
@@ -155,6 +201,59 @@ pub fn icon(c: &mut Ctx, t: Tab, cx: f32, cy: f32, col: Rgba) {
             c.circle(cx - 3.0, cy + 3.0, 1.1, col);
             c.circle(cx + 1.0, cy + 3.0, 1.1, col);
         }
+        Tab::Tasks => {
+            for k in 0..3 {
+                let y = cy - 5.0 + k as f32 * 5.0;
+                c.circle(cx - 6.0, y, 1.4, col);
+                c.line(cx - 2.5, y, cx + 7.0, y, lw, col);
+            }
+        }
+        Tab::Reminders => {
+            c.poly(&[(cx - 6.0, cy + 4.0), (cx - 5.0, cy - 3.0), (cx, cy - 7.0), (cx + 5.0, cy - 3.0), (cx + 6.0, cy + 4.0)], col);
+            c.circle(cx, cy + 6.5, 2.0, col);
+        }
+        Tab::Habits => {
+            c.ring(cx, cy, 7.0, col, lw);
+            c.line(cx - 3.5, cy, cx - 1.0, cy + 3.0, lw, col);
+            c.line(cx - 1.0, cy + 3.0, cx + 4.0, cy - 3.0, lw, col);
+        }
+        Tab::Routines => {
+            c.ring(cx, cy, 6.5, col, lw);
+            c.poly(&[(cx + 4.0, cy - 9.0), (cx + 9.0, cy - 6.0), (cx + 3.5, cy - 4.0)], col);
+            c.poly(&[(cx - 2.0, cy - 3.0), (cx + 3.0, cy), (cx - 2.0, cy + 3.0)], col);
+        }
+        Tab::Memory => {
+            c.circle(cx, cy, 2.6, col);
+            for (dx, dy) in [(-7.0f32, -5.0f32), (7.0, -4.0), (-5.0, 7.0), (6.0, 6.0)] {
+                c.line(cx, cy, cx + dx, cy + dy, 1.2, col);
+                c.circle(cx + dx, cy + dy, 1.8, col);
+            }
+        }
+        Tab::Pc => {
+            c.rr_stroke(cx - 8.5, cy - 7.0, 17.0, 11.0, 2.0, col, lw);
+            c.line(cx, cy + 4.0, cx, cy + 7.0, lw, col);
+            c.line(cx - 4.0, cy + 7.5, cx + 4.0, cy + 7.5, lw, col);
+        }
+        Tab::Batteries => {
+            c.rr_stroke(cx - 8.0, cy - 4.5, 15.0, 9.0, 2.0, col, lw);
+            c.rr(cx + 7.0, cy - 2.0, 2.0, 4.0, 1.0, col);
+            c.rr(cx - 6.0, cy - 2.5, 7.0, 5.0, 1.0, col);
+        }
+        Tab::Accounts => {
+            c.ring(cx, cy - 3.0, 3.5, col, lw);
+            c.rr_stroke(cx - 6.5, cy + 2.0, 13.0, 7.0, 3.5, col, lw);
+        }
+        Tab::JSettings => {
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::PI / 4.0;
+                c.line(cx + a.cos() * 4.0, cy + a.sin() * 4.0, cx + a.cos() * 7.5, cy + a.sin() * 7.5, 2.2, col);
+            }
+            c.ring(cx, cy, 4.5, col, 1.8);
+        }
+        Tab::Phone => {
+            c.rr_stroke(cx - 5.5, cy - 8.5, 11.0, 17.0, 2.5, col, lw);
+            c.line(cx - 1.5, cy + 5.5, cx + 1.5, cy + 5.5, lw, col);
+        }
         Tab::Mails => {
             c.rr_stroke(cx - 8.5, cy - 6.0, 17.0, 12.0, 2.0, col, lw);
             c.line(cx - 7.5, cy - 4.5, cx, cy + 1.0, lw, col);
@@ -163,12 +262,12 @@ pub fn icon(c: &mut Ctx, t: Tab, cx: f32, cy: f32, col: Rgba) {
     }
 }
 
-fn plus(c: &mut Ctx, cx: f32, cy: f32, col: Rgba) {
+pub(crate) fn plus(c: &mut Ctx, cx: f32, cy: f32, col: Rgba) {
     c.line(cx - 6.0, cy, cx + 6.0, cy, 1.7, col);
     c.line(cx, cy - 6.0, cx, cy + 6.0, 1.7, col);
 }
 
-fn speaker(c: &mut Ctx, cx: f32, cy: f32, col: Rgba) {
+pub(crate) fn speaker(c: &mut Ctx, cx: f32, cy: f32, col: Rgba) {
     c.poly(&[(cx - 8.0, cy - 2.5), (cx - 5.0, cy - 2.5), (cx - 1.0, cy - 6.5), (cx - 1.0, cy + 6.5), (cx - 5.0, cy + 2.5), (cx - 8.0, cy + 2.5)], col);
     for (k, rad) in [4.0f32, 7.5].iter().enumerate() {
         let n = 6;
@@ -180,7 +279,7 @@ fn speaker(c: &mut Ctx, cx: f32, cy: f32, col: Rgba) {
     }
 }
 
-fn skip(c: &mut Ctx, cx: f32, cy: f32, next: bool, col: Rgba) {
+pub(crate) fn skip(c: &mut Ctx, cx: f32, cy: f32, next: bool, col: Rgba) {
     let d = if next { 1.0 } else { -1.0 };
     c.poly(&[(cx - 4.0 * d, cy - 5.0), (cx + 3.0 * d, cy), (cx - 4.0 * d, cy + 5.0)], col);
     c.line(cx + 4.5 * d, cy - 5.0, cx + 4.5 * d, cy + 5.0, 1.8, col);
@@ -201,7 +300,7 @@ pub fn cards_view(c: &mut Ctx, r: &R, w: f32, h: f32) {
     tab_bar(c, r, w, h);
 }
 
-fn header(c: &mut Ctx, r: &R, w: f32) {
+pub(crate) fn header(c: &mut Ctx, r: &R, w: f32) {
     let t = c.t;
     let cf = r.c();
     let now = r.now;
@@ -232,7 +331,7 @@ fn header(c: &mut Ctx, r: &R, w: f32) {
     c.hit(w - 44.0, 4.0, 40.0, 34.0, Action::Ile(A_MENU));
 }
 
-fn home(c: &mut Ctx, r: &R, w: f32) {
+pub(crate) fn home(c: &mut Ctx, r: &R, w: f32) {
     let cf = r.c();
     let inner = w - 2.0 * PAD;
     let narrow = (inner * 0.215).round();
@@ -241,7 +340,10 @@ fn home(c: &mut Ctx, r: &R, w: f32) {
     let x0 = PAD;
     let x1 = x0 + narrow + 8.0;
     let x2 = x1 + mid + 8.0;
-    left_card(c, r, x0, y, narrow, CARD_H);
+    match crate::island_big::account_alert(r) {
+        Some((ti, _)) => alert_card(c, r, x0, y, narrow, CARD_H, &ti),
+        None => left_card(c, r, x0, y, narrow, CARD_H),
+    }
     if r.d.media.as_ref().is_some_and(|m| !m.title.is_empty()) {
         media_card(c, r, x1, y, mid, CARD_H);
     } else {
@@ -250,12 +352,12 @@ fn home(c: &mut Ctx, r: &R, w: f32) {
     focus_card(c, r, x2, y, narrow, CARD_H, cf.right_grad);
 }
 
-fn grad(i: usize) -> (Rgba, Rgba) {
+pub(crate) fn grad(i: usize) -> (Rgba, Rgba) {
     let (a, b) = GRADS[i.min(GRADS.len() - 1)];
     (Rgba::from(a), Rgba::from(b))
 }
 
-fn left_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
+pub(crate) fn left_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
     let cf = r.c();
     let (a, b) = grad(cf.left_grad);
     vgrad(c, x, y, w, h, 16.0, a, b);
@@ -299,9 +401,47 @@ fn left_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
     c.hit(x, y, w, h, act);
 }
 
-fn media_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
+/// La musique vient d'un navigateur (Chrome, Edge, Brave, Opera, Firefox) ?
+pub fn is_browser(app: &str) -> bool {
+    let a = app.to_lowercase();
+    ["chrome", "edge", "brave", "opera", "firefox"].iter().any(|b| a.contains(b))
+}
+
+/// « Pochette » qui n'est en fait que l'icône de l'appli : petite, ou bords en partie transparents.
+pub fn art_is_icon(img: &Pixmap) -> bool {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w <= 96 && h <= 96 {
+        return true;
+    }
+    let d = img.data();
+    let alpha = |x: usize, y: usize| d[(y * w + x) * 4 + 3];
+    let (mut total, mut clear) = (0, 0);
+    for i in (0..w).step_by((w / 24).max(1)) {
+        for y in [0, h - 1] {
+            total += 1;
+            clear += (alpha(i, y) < 200) as i32;
+        }
+    }
+    for j in (0..h).step_by((h / 24).max(1)) {
+        for x in [0, w - 1] {
+            total += 1;
+            clear += (alpha(x, j) < 200) as i32;
+        }
+    }
+    clear * 4 > total
+}
+
+pub(crate) fn media_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
     let Some(m) = &r.d.media else { return };
-    match &m.art {
+    // navigateur : pas de gros logo (icône de l'appli) → fond météo, épuré
+    let browser = is_browser(&m.app);
+    let art = m.art.as_ref().filter(|a| !(browser && art_is_icon(a)));
+    match art {
+        None if browser => {
+            if !weather_scene(c, r, x, y, w, h) {
+                vgrad(c, x, y, w, h, 16.0, Rgba::rgb8(34, 36, 46), Rgba::rgb8(62, 66, 84));
+            }
+        }
         Some(art) => {
             if r.c().art_blur {
                 let mut b = art.clone();
@@ -316,7 +456,7 @@ fn media_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
         None => vgrad(c, x, y, w, h, 16.0, Rgba::rgb8(40, 44, 60), Rgba::rgb8(90, 70, 140)),
     }
     vgrad(c, x, y + h * 0.35, w, h * 0.65, 16.0, Rgba(0.0, 0.0, 0.0, 0.0), Rgba(0.0, 0.0, 0.0, 0.62));
-    let app = if m.app.is_empty() { "En cours".to_string() } else { format!("En cours · {}", m.app) };
+    let app = if m.app.is_empty() || browser { "En cours".to_string() } else { format!("En cours · {}", m.app) };
     let app = c.fit(Wt::Semibold, 11.0, &app.to_uppercase(), w - 30.0);
     c.text_t(Wt::Semibold, 11.0, x + 16.0, y + 26.0, WHITE.a(0.85), &app, 1.2);
     let tw = w - 90.0;
@@ -342,14 +482,28 @@ fn media_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
 }
 
 /// Pas de musique : une petite scène météo dessinée (ciel, soleil ou lune, nuages, pluie, dunes).
-fn weather_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
+pub(crate) fn weather_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
     let cf = r.c();
-    let Some(wt) = &r.d.weather else {
+    let Some(wt) = r.d.weather.as_ref().filter(|_| weather_scene(c, r, x, y, w, h)) else {
         vgrad(c, x, y, w, h, 16.0, Rgba::rgb8(40, 44, 60), Rgba::rgb8(70, 74, 96));
         caps(c, x + 16.0, y + 26.0, WHITE.a(0.85), "Météo");
         c.text(Wt::Regular, 13.0, x + 16.0, y + h - 20.0, WHITE.a(0.8), "Chargement de la météo…");
         return;
     };
+    let head = format!("Météo · {}", r.cfg.weather.city);
+    let head = c.fit(Wt::Semibold, 11.0, &head.to_uppercase(), w - 30.0);
+    c.text_t(Wt::Semibold, 11.0, x + 16.0, y + 26.0, WHITE.a(0.9), &head, 1.2);
+    c.text(Wt::Light, 46.0, x + 14.0, y + h - 46.0, WHITE, &temp_txt(cf, wt.temp));
+    let phrase = if cf.weather_phrase { weather_phrase(cf, wt.code, wt.day, wt.temp, r.now.ordinal()) } else { wmo_label(wt.code, wt.day).to_string() };
+    let phrase = c.fit(Wt::Semibold, 13.5, &phrase, w - 30.0);
+    c.text(Wt::Semibold, 13.5, x + 16.0, y + h - 18.0, WHITE, &phrase);
+    c.hit(x, y, w, h, Action::Refresh);
+}
+
+/// Le décor météo seul (sans texte). `false` si la météo n'est pas encore chargée.
+pub(crate) fn weather_scene(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) -> bool {
+    let cf = r.c();
+    let Some(wt) = &r.d.weather else { return false };
     let cat = wcat(wt.code, wt.day);
     let (a, b) = wcolors(cat);
     let sky_top = a.mix(Rgba(0.0, 0.0, 0.0, 1.0), 0.15);
@@ -412,17 +566,10 @@ fn weather_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
     c.poly(&p1, d1.a(0.85));
     c.poly(&p2, d2.a(0.95));
     vgrad(c, x, y + h * 0.5, w, h * 0.5, 16.0, Rgba(0.0, 0.0, 0.0, 0.0), Rgba(0.0, 0.0, 0.0, 0.35));
-    let head = format!("Météo · {}", r.cfg.weather.city);
-    let head = c.fit(Wt::Semibold, 11.0, &head.to_uppercase(), w - 30.0);
-    c.text_t(Wt::Semibold, 11.0, x + 16.0, y + 26.0, WHITE.a(0.9), &head, 1.2);
-    c.text(Wt::Light, 46.0, x + 14.0, y + h - 46.0, WHITE, &temp_txt(cf, wt.temp));
-    let phrase = if cf.weather_phrase { weather_phrase(cf, wt.code, wt.day, wt.temp, r.now.ordinal()) } else { wmo_label(wt.code, wt.day).to_string() };
-    let phrase = c.fit(Wt::Semibold, 13.5, &phrase, w - 30.0);
-    c.text(Wt::Semibold, 13.5, x + 16.0, y + h - 18.0, WHITE, &phrase);
-    c.hit(x, y, w, h, Action::Refresh);
+    true
 }
 
-fn focus_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32, g: usize) {
+pub(crate) fn focus_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32, g: usize) {
     let cf = r.c();
     let (a, b) = grad(g);
     vgrad(c, x, y, w, h, 16.0, a, b);
@@ -453,17 +600,24 @@ fn focus_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32, g: usize) {
     let _ = (GREEN, ORANGE);
 }
 
-fn tab_bar(c: &mut Ctx, r: &R, w: f32, h: f32) {
+pub(crate) fn tab_bar(c: &mut Ctx, r: &R, w: f32, h: f32) {
     let t = c.t;
     let y = h - 50.0;
     let bh = 40.0;
     c.rr(PAD, y, w - 2.0 * PAD, bh, 20.0, t.fg.a(0.05));
     let cy = y + bh / 2.0;
-    plus(c, PAD + 22.0, cy, t.fg2);
+    if !glyph_at(c, '\u{E710}', PAD + 22.0, cy, 14.0, t.fg2) {
+        plus(c, PAD + 22.0, cy, t.fg2);
+    }
     c.hit(PAD, y, 44.0, bh, Action::Ile(A_TABS_SETTINGS));
     let cur = Tab::of(r.st.view);
     let mut x = PAD + 46.0;
-    for tab in tabs(r.c()) {
+    // onglets sans contenu cachés (option), sauf celui qui est ouvert
+    let list: Vec<Tab> = tabs(r.c()).into_iter().filter(|t| *t == cur || !(r.c().hide_empty_tabs && tab_empty(*t, r))).collect();
+    // beaucoup d'onglets : on resserre les icônes pour que tout tienne
+    let avail = w - PAD - 46.0 - 100.0 - 120.0;
+    let step = (avail / (list.len().max(2) - 1) as f32).clamp(24.0, 34.0);
+    for tab in list {
         if tab == cur {
             let lab = tab.label();
             let lw = c.measure(Wt::Semibold, 11.0, lab) + lab.chars().count() as f32 * 1.4;
@@ -474,22 +628,45 @@ fn tab_bar(c: &mut Ctx, r: &R, w: f32, h: f32) {
             c.hit(x, y, pw, bh, Action::IleN(N_TAB, tab as u16));
             x += pw + 4.0;
         } else {
-            icon(c, tab, x + 17.0, cy, t.fg2);
-            c.hit(x, y, 34.0, bh, Action::IleN(N_TAB, tab as u16));
-            x += 34.0;
+            icon(c, tab, x + step / 2.0, cy, t.fg2);
+            c.hit(x, y, step, bh, Action::IleN(N_TAB, tab as u16));
+            x += step;
         }
         if x > w - 80.0 {
             break;
         }
     }
     let sx = w - PAD - 24.0;
-    speaker(c, sx, cy, t.fg2);
+    if !glyph_at(c, '\u{E767}', sx, cy, 15.0, t.fg2) {
+        speaker(c, sx, cy, t.fg2);
+    }
     c.hit(sx - 18.0, y, 36.0, bh, Action::Ile(A_VOLUME));
+    // bouton « agrandir » : ouvre la grande île sans passer par Jarvis
+    let ex = sx - 44.0;
+    c.rr(ex - 16.0, y + 6.0, 32.0, bh - 12.0, 14.0, t.accent.a(0.25));
+    if !glyph_at(c, '\u{E740}', ex, cy, 14.0, t.fg) {
+        c.rr_stroke(ex - 7.0, cy - 6.0, 14.0, 12.0, 2.0, t.fg, 1.6);
+    }
+    c.hit(ex - 18.0, y, 36.0, bh, Action::Ile(A_BIG_OPEN));
+}
+
+/// Onglet sans rien à montrer (caché si l'option « Cacher les onglets vides » est active).
+pub fn tab_empty(t: Tab, r: &R) -> bool {
+    use crate::jarvis_data::arr;
+    match t {
+        Tab::Discord => r.d.discord.is_empty() && r.discord_unread.unwrap_or(0) == 0,
+        Tab::Phone => r.d.phone.is_empty(),
+        Tab::Batteries => arr(r.jd.get("appareils"), "appareils").is_empty(),
+        Tab::Notifs => r.notifs.is_empty(),
+        Tab::Clips => r.clips.is_empty() && arr(r.jd.get("copies"), "copies").is_empty(),
+        Tab::Routines => arr(r.jd.get("routines"), "routines").is_empty(),
+        _ => false,
+    }
 }
 
 // ---------- Pages des onglets ----------
 
-fn page(c: &mut Ctx, r: &R, view: View, w: f32) {
+pub(crate) fn page(c: &mut Ctx, r: &R, view: View, w: f32) {
     // les pages « détail » d'origine dessinent un bouton en haut à droite : on décale un peu
     let detail = |c: &mut Ctx, f: fn(&mut Ctx, &R, f32, f32)| {
         let oy = c.oy;
@@ -517,11 +694,13 @@ fn page(c: &mut Ctx, r: &R, view: View, w: f32) {
             school_hw(c, r, SIDE + 300.0, w - SIDE - (SIDE + 300.0));
         }
         View::Calendar => calendar_page(c, r, w),
-        View::Main => {}
+        v if crate::island_big::section_page(c, r, v, w, BODY - 4.0) => {}
+        View::Phone => phone_page(c, r, w),
+        _ => {}
     }
 }
 
-fn music_page(c: &mut Ctx, r: &R, w: f32) {
+pub(crate) fn music_page(c: &mut Ctx, r: &R, w: f32) {
     let t = c.t;
     let Some(m) = r.d.media.as_ref().filter(|m| !m.title.is_empty()) else {
         c.text(Wt::Semibold, 16.0, SIDE, 40.0, t.fg, "Aucune musique en cours");
@@ -530,13 +709,19 @@ fn music_page(c: &mut Ctx, r: &R, w: f32) {
         return;
     };
     let sz = 196.0;
-    match &m.art {
+    let browser = is_browser(&m.app);
+    match m.art.as_ref().filter(|a| !(browser && art_is_icon(a))) {
         Some(a) => cover(c, a, SIDE, 4.0, sz, sz, 14.0),
+        None if browser => {
+            if !weather_scene(c, r, SIDE, 4.0, sz, sz) {
+                vgrad(c, SIDE, 4.0, sz, sz, 14.0, Rgba::rgb8(34, 36, 46), Rgba::rgb8(62, 66, 84));
+            }
+        }
         None => vgrad(c, SIDE, 4.0, sz, sz, 14.0, Rgba::rgb8(40, 44, 60), Rgba::rgb8(90, 70, 140)),
     }
     let x = SIDE + sz + 24.0;
     let tw = w - x - SIDE;
-    caps(c, x, 26.0, t.fg2, if m.app.is_empty() { "En cours" } else { &m.app });
+    caps(c, x, 26.0, t.fg2, if m.app.is_empty() || browser { "En cours" } else { &m.app });
     let title = c.fit(Wt::Semibold, 24.0, &m.title, tw);
     c.text(Wt::Semibold, 24.0, x, 62.0, t.fg, &title);
     let artist = c.fit(Wt::Regular, 15.0, &m.artist, tw);
@@ -556,7 +741,7 @@ fn music_page(c: &mut Ctx, r: &R, w: f32) {
     volume_row(c, x, 180.0);
 }
 
-fn volume_row(c: &mut Ctx, x: f32, y: f32) {
+pub(crate) fn volume_row(c: &mut Ctx, x: f32, y: f32) {
     let t = c.t;
     speaker(c, x + 10.0, y + 12.0, t.fg2);
     let mut cx = x + 30.0;
@@ -566,7 +751,7 @@ fn volume_row(c: &mut Ctx, x: f32, y: f32) {
     c.text(Wt::Regular, 11.5, cx + 6.0, y + 16.5, t.fg3, "(molette sur le haut-parleur en bas à droite)");
 }
 
-fn dnd_page(c: &mut Ctx, r: &R, w: f32) {
+pub(crate) fn dnd_page(c: &mut Ctx, r: &R, w: f32) {
     let t = c.t;
     let on = r.c().dnd;
     icon(c, Tab::Dnd, SIDE + 18.0, 46.0, if on { Rgba::rgb8(175, 140, 255) } else { t.fg2 });
@@ -586,12 +771,12 @@ fn dnd_page(c: &mut Ctx, r: &R, w: f32) {
     chip(c, SIDE, 170.0, "Réglages des notifications", t.fg.a(0.12), t.fg, Some(Action::Ile(A_NOTIF_SETTINGS)));
 }
 
-fn clips_page(c: &mut Ctx, r: &R, w: f32) {
+pub(crate) fn clips_page(c: &mut Ctx, r: &R, w: f32) {
     let t = c.t;
     caps(c, SIDE, 22.0, t.fg2, "Presse-papiers");
     c.text_r(Wt::Regular, 11.5, w - SIDE, 22.0, t.fg3, "clic : recopier · gardé en mémoire seulement");
     if r.clips.is_empty() {
-        c.text(Wt::Regular, 13.0, SIDE, 56.0, t.fg2, "Rien copié depuis le lancement de Givre.");
+        c.text(Wt::Regular, 13.0, SIDE, 56.0, t.fg2, "Rien copié depuis le lancement de Jarvis.");
         return;
     }
     let colw = (w - 2.0 * SIDE - 12.0) / 2.0;
@@ -605,7 +790,7 @@ fn clips_page(c: &mut Ctx, r: &R, w: f32) {
     }
 }
 
-fn school_hw(c: &mut Ctx, r: &R, x: f32, w: f32) {
+pub(crate) fn school_hw(c: &mut Ctx, r: &R, x: f32, w: f32) {
     let t = c.t;
     caps(c, x, 18.0, t.fg2, "Devoirs en détail");
     let list = homework_list(r.d, r.c(), r.now);
@@ -641,11 +826,12 @@ fn school_hw(c: &mut Ctx, r: &R, x: f32, w: f32) {
     }
 }
 
-fn calendar_page(c: &mut Ctx, r: &R, w: f32) {
+pub(crate) fn calendar_page(c: &mut Ctx, r: &R, w: f32) {
     let t = c.t;
     let p = &r.d.pronote;
-    if !p.connected {
-        c.text(Wt::Regular, 13.5, SIDE, 40.0, t.fg2, "Pronote n'est pas connecté : l'emploi du temps s'affichera ici.");
+    if !p.connected || !r.cfg.pronote.on {
+        let txt = if r.cfg.pronote.on { "Pronote n'est pas connecté : l'emploi du temps s'affichera ici." } else { "Pronote est désactivé (Comptes) : pas d'emploi du temps." };
+        c.text(Wt::Regular, 13.5, SIDE, 40.0, t.fg2, txt);
         c.hit(SIDE, 20.0, w - 2.0 * SIDE, 40.0, Action::Accounts);
         return;
     }
@@ -677,4 +863,55 @@ fn calendar_page(c: &mut Ctx, r: &R, w: f32) {
             y += 32.0;
         }
     }
+}
+
+pub(crate) fn phone_page(c: &mut Ctx, r: &R, w: f32) {
+    let t = c.t;
+    caps(c, SIDE, 18.0, t.fg2, "Téléphone");
+    c.text_r(Wt::Regular, 11.5, w - SIDE, 18.0, t.fg3, "via Mobile connecté · lecture seule");
+    if r.d.phone.is_empty() {
+        let txt = "Rien reçu pour l'instant. Les SMS, appels et notifications du téléphone apparaissent ici quand « Mobile connecté » les affiche dans Windows.";
+        for (i, l) in c.wrap(Wt::Regular, 13.0, txt, w - 2.0 * SIDE).iter().take(4).enumerate() {
+            c.text(Wt::Regular, 13.0, SIDE, 48.0 + i as f32 * 18.0, t.fg2, l);
+        }
+        return;
+    }
+    let mut y = 30.0;
+    for p in r.d.phone.iter().rev().skip(r.st.scroll) {
+        if y + 40.0 > BODY - 8.0 {
+            break;
+        }
+        let (col, tag) = match p.kind.as_str() {
+            "appel" => (Rgba::rgb8(52, 199, 89), "Appel"),
+            "sms" => (Rgba::rgb8(10, 132, 255), "SMS"),
+            "batterie" => (ORANGE, "Batterie"),
+            _ => (Rgba::rgb8(142, 142, 147), if p.app.is_empty() { "Appli" } else { p.app.as_str() }),
+        };
+        c.rr(SIDE - 6.0, y, w - 2.0 * SIDE + 12.0, 36.0, 10.0, t.fg.a(0.05));
+        c.circle(SIDE + 8.0, y + 18.0, 8.0, col);
+        icon(c, Tab::Phone, SIDE + 8.0, y + 18.0, WHITE);
+        let when = p.time.format("%H:%M").to_string();
+        c.text_r(Wt::Regular, 11.5, w - SIDE, y + 15.0, t.fg3, &when);
+        let head = c.fit(Wt::Semibold, 13.0, &format!("{tag} · {}", p.from), w - 2.0 * SIDE - 90.0);
+        c.text(Wt::Semibold, 13.0, SIDE + 24.0, y + 15.0, t.fg, &head);
+        let txt = c.fit(Wt::Regular, 12.0, &p.text, w - 2.0 * SIDE - 30.0);
+        c.text(Wt::Regular, 12.0, SIDE + 24.0, y + 30.0, t.fg2, &txt);
+        y += 40.0;
+    }
+}
+
+/// Carte rouge « reconnecte… » à la place de la carte de gauche, avec un bouton vers les Comptes.
+pub(crate) fn alert_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32, title: &str) {
+    let _ = r;
+    vgrad(c, x, y, w, h, 16.0, Rgba::rgb8(90, 16, 20), Rgba::rgb8(226, 56, 56));
+    caps(c, x + 14.0, y + 26.0, WHITE.a(0.92), "Comptes");
+    let mut yy = y + 60.0;
+    for l in c.wrap(Wt::Semibold, 15.0, title, w - 26.0).iter().take(4) {
+        c.text(Wt::Semibold, 15.0, x + 14.0, yy, WHITE, l);
+        yy += 20.0;
+    }
+    let bw = w - 24.0;
+    c.rr(x + 12.0, y + h - 44.0, bw, 30.0, 15.0, WHITE);
+    c.text_c(Wt::Semibold, 12.5, x + 12.0 + bw / 2.0, y + h - 24.0, RED, "Reconnecter");
+    c.hit(x, y, w, h, Action::Ile(A_ACCOUNTS));
 }

@@ -37,7 +37,7 @@ pub const PRESETS: [Preset; 10] = [
     Preset { name: "Café", c0: [40, 28, 20], c1: [74, 52, 36], accent: [235, 180, 120], light: false },
 ];
 
-pub const ACCENT_NAMES: [&str; 10] = ["Celle du thème", "Celle de Givre", "Vert", "Bleu", "Violet", "Rose", "Orange", "Rouge", "Jaune", "Turquoise"];
+pub const ACCENT_NAMES: [&str; 10] = ["Celle du thème", "Celle de Jarvis", "Vert", "Bleu", "Violet", "Rose", "Orange", "Rouge", "Jaune", "Turquoise"];
 const ACCENTS: [[u8; 3]; 8] = [[52, 199, 89], [10, 132, 255], [175, 82, 222], [255, 55, 95], [255, 149, 0], [255, 59, 48], [255, 204, 0], [48, 210, 200]];
 
 pub(crate) const COMPLIMENTS: [&str; 12] = [
@@ -79,6 +79,14 @@ pub struct R<'a> {
     pub clips: &'a [String],
     /// Question posée à Jarvis sur le mail ouvert.
     pub mail_ai: &'a MailAi,
+    /// Données de Jarvis (tâches, rappels…), carte mentale et état des sections.
+    pub jd: &'a crate::jarvis_data::JData,
+    pub mem: &'a crate::jarvis_data::MemGraph,
+    pub ui: &'a crate::island_big::BigUi,
+    /// Hauteur de l'écran (la grande île doit tenir).
+    pub sh: i32,
+    /// Message d'état (connexion Pronote, Google…).
+    pub status: &'a str,
 }
 
 impl R<'_> {
@@ -134,7 +142,12 @@ pub(crate) fn theme(r: &R) -> Theme {
 
 pub(crate) fn scale(r: &R) -> f32 {
     let (mw, _) = main_size(r.c());
-    (r.dpi * r.c().size).min(r.sw as f32 * 0.97 / mw.max(780.0)).max(0.4)
+    let mut k = (r.dpi * r.c().size).min(r.sw as f32 * 0.97 / mw.max(780.0));
+    if crate::island_big::is_big(r) {
+        use crate::island_big::{BIG_H, BIG_W};
+        k = k.min(r.sw as f32 * 0.96 / BIG_W).min(r.sh as f32 * 0.92 / BIG_H);
+    }
+    k.max(0.4)
 }
 
 /// Taille logique visée pour le mode actuel.
@@ -149,6 +162,7 @@ pub fn target(r: &R) -> (Mode, f32, f32) {
         Mode::Toast => (440.0, 68.0),
         Mode::Jarvis => (420.0, 54.0),
         Mode::Ring => (470.0, 118.0),
+        Mode::Main | Mode::View if crate::island_big::is_big(r) => (crate::island_big::BIG_W, crate::island_big::BIG_H),
         Mode::Main | Mode::View if c.layout == 0 => (CARDS_W, CARDS_H),
         Mode::Main => main_size(c),
         Mode::View => (main_size(c).0.max(800.0), 350.0),
@@ -183,9 +197,10 @@ pub fn fx_interval(r: &R) -> Option<u32> {
         || (r.st.slide > 0.0 && r.st.slide < 1.0)
         || r.chat.asking
         || r.st.typing
-        || (open && r.clocks.chrono_since.is_some());
+        || (open && r.clocks.chrono_since.is_some())
+        || (open && r.st.view == View::Memory && r.mem.moving);
     if anim {
-        Some(if open { 90 } else { 40 })
+        Some(if open && crate::island_big::is_big(r) { 80 } else if open { 33 } else { 40 })
     } else if r.clocks.busy() || (open && c.seconds) || r.st.toast.is_some() {
         Some(250)
     } else {
@@ -359,6 +374,7 @@ pub(crate) fn src_color(s: Src) -> Rgba {
         Src::Discord => Rgba::rgb8(88, 101, 242),
         Src::Timer | Src::Alarm => ORANGE,
         Src::Weather => Rgba::rgb8(90, 200, 250),
+        Src::Phone => Rgba::rgb8(52, 199, 89),
         Src::Jarvis => Rgba::rgb8(175, 82, 222),
         Src::Other => Rgba::rgb8(142, 142, 147),
     }
@@ -484,6 +500,7 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
                 Mode::Toast => toast(&mut cx, r, tw, th),
                 Mode::Jarvis => jarvis_bar(&mut cx, r, tw, th),
                 Mode::Ring => ringing(&mut cx, r, tw),
+                Mode::Main | Mode::View if crate::island_big::is_big(r) => crate::island_big::big_view(&mut cx, r, tw, th),
                 Mode::Main | Mode::View if c.layout == 0 => crate::island_cards::cards_view(&mut cx, r, tw, th),
                 Mode::Main => main_view(&mut cx, r, tw),
                 Mode::View => detail(&mut cx, r, tw, th),
@@ -696,6 +713,8 @@ pub(crate) fn eyes(c: &mut Ctx, r: &R, cx: f32, cy: f32) {
 pub(crate) fn toast(c: &mut Ctx, r: &R, w: f32, h: f32) {
     let Some((n, _)) = &r.st.toast else { return };
     let t = c.t;
+    // téléphone : les codes de vérification sont masqués dans les bulles
+    let (title, body) = if n.src == Src::Phone { (mask_codes(&n.title), mask_codes(&n.body)) } else { (n.title.clone(), n.body.clone()) };
     let col = src_color(n.src);
     c.circle(34.0, h / 2.0, 17.0, col);
     let letter = n.src.label().chars().next().unwrap_or('?').to_string();
@@ -703,9 +722,9 @@ pub(crate) fn toast(c: &mut Ctx, r: &R, w: f32, h: f32) {
     let when = n.time.format("%H:%M").to_string();
     let ww = c.measure(Wt::Regular, 11.5, &when);
     c.text_r(Wt::Regular, 11.5, w - 20.0, 27.0, t.fg3, &when);
-    let title = c.fit(Wt::Semibold, 14.0, &n.title, w - 80.0 - ww - 10.0);
+    let title = c.fit(Wt::Semibold, 14.0, &title, w - 80.0 - ww - 10.0);
     c.text(Wt::Semibold, 14.0, 62.0, 28.0, t.fg, &title);
-    let body = c.fit(Wt::Regular, 12.5, &n.body, w - 84.0);
+    let body = c.fit(Wt::Regular, 12.5, &body, w - 84.0);
     c.text(Wt::Regular, 12.5, 62.0, 48.0, t.fg2, &body);
     c.hit(0.0, 0.0, w, h, Action::IleN(N_VIEW, View::Notifs as u16));
 }
@@ -717,7 +736,7 @@ pub(crate) fn jarvis_bar(c: &mut Ctx, r: &R, w: f32, h: f32) {
     let lab = jarvis_label(&r.jarvis.state);
     let lw = c.text(Wt::Semibold, 13.5, 44.0, h / 2.0 + 5.0, t.fg, lab);
     if !r.jarvis.text.is_empty() {
-        let txt = c.fit(Wt::Regular, 12.5, &format!("« {} »", r.jarvis.text), w - 64.0 - lw - 12.0);
+        let txt = c.fit(Wt::Regular, 12.5, &format!("« {} »", r.jarvis.shown()), w - 64.0 - lw - 12.0);
         c.text(Wt::Regular, 12.5, 44.0 + lw + 12.0, h / 2.0 + 5.0, t.fg2, &txt);
     }
 }
@@ -770,7 +789,7 @@ pub(crate) fn top_bar(c: &mut Ctx, r: &R, w: f32, title: Option<&str>) {
             let mw = chip(c, x + 26.0 + pw, 9.0, mic, if r.jarvis.micro { GREEN.a(0.25) } else { RED.a(0.3) }, t.fg, Some(Action::Ile(A_JARVIS_MIC)));
             let mut lab = jarvis_label(&r.jarvis.state).to_string();
             if !r.jarvis.text.is_empty() {
-                lab = format!("{lab}  « {} »", r.jarvis.text);
+                lab = format!("{lab}  « {} »", r.jarvis.shown());
             }
             let lx = x + 34.0 + pw + mw;
             let lab = c.fit(Wt::Regular, 12.5, &lab, (w - lx - 110.0).max(40.0));
@@ -1066,8 +1085,13 @@ pub(crate) fn pronote_col(c: &mut Ctx, r: &R, x: f32, w: f32) {
     let cf = r.c();
     header(c, r, x, 18.0, "PRONOTE");
     let p = &r.d.pronote;
-    if !p.connected {
-        for (i, l) in ["Pronote n'est pas connecté.", "Clique ici pour le connecter", "(Paramètres › Comptes)."].iter().enumerate() {
+    if !p.connected || !r.cfg.pronote.on {
+        let lignes = if r.cfg.pronote.on {
+            ["Pronote n'est pas connecté.", "Clique ici pour le connecter", "(Paramètres › Comptes)."]
+        } else {
+            ["Pronote est désactivé.", "Clique ici pour le réactiver", "(Comptes)."]
+        };
+        for (i, l) in lignes.iter().enumerate() {
             c.text(Wt::Regular, 13.0, x, 50.0 + i as f32 * 18.0, t.fg2, l);
         }
         c.hit(x - 10.0, -2.0, w + 20.0, BODY - 12.0, Action::Accounts);
@@ -1340,7 +1364,8 @@ pub(crate) fn detail(c: &mut Ctx, r: &R, w: f32, h: f32) {
         View::School => "PRONOTE",
         View::Calendar => "AGENDA",
         View::Clips => "PRESSE-PAPIERS",
-        View::Main => "",
+        View::Phone => "TÉLÉPHONE",
+        _ => "",
     };
     top_bar(c, r, w, Some(title));
     let oy = c.oy;

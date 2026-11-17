@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.cerveau import enlever_mot_activation  # noqa: E402
+from core.cerveau import STOP, commande_autour_du_mot, enlever_mot_activation  # noqa: E402
 from modules import duree_en_secondes, nombre, normaliser  # noqa: E402
 from modules.annonces import dans_creneau, phrase  # noqa: E402
 from modules.minuteurs import dire_duree, heure_depuis_texte  # noqa: E402
@@ -55,6 +55,18 @@ def test_divers():
     assert phrase({"source": "discord", "titre": "Tom", "texte": "salut"}) == "Message Discord de Tom : salut"
 
 
+def test_commande_autour_du_mot():
+    assert commande_autour_du_mot("blabla. Hey Jarvis, mets pause.") == "mets pause"
+    assert commande_autour_du_mot("Mets pause, Jarvis.") == "Mets pause"
+
+
+def test_commandes_stop():
+    for texte in ("stop jarvis", "c'est bon merci"):
+        assert STOP.match(normaliser(texte))
+    for texte in ("stop la musique", "c'est bon à savoir"):
+        assert not STOP.match(normaliser(texte))
+
+
 def test_creneau():
     from datetime import datetime
     nuit = datetime(2026, 1, 1, 23, 0)
@@ -63,3 +75,63 @@ def test_creneau():
     assert not dans_creneau("22:00-07:00", jour)
     assert dans_creneau("13:00-16:00", jour)
     assert not dans_creneau("", jour)
+
+
+def test_decouper_phrases():
+    import main
+    classe = next(c for c in vars(main).values() if isinstance(c, type) and hasattr(c, "decouper_phrases"))
+    d = classe.decouper_phrases
+    assert d("Oui.") == ["Oui."]
+    assert d("Il fait 12 degrés. Demain il pleut toute la journée sur Bordeaux, prends ton parapluie !") == [
+        "Il fait 12 degrés. Demain il pleut toute la journée sur Bordeaux, prends ton parapluie !"]
+    longues = d("Voici la première phrase, assez longue pour partir seule. Et la deuxième phrase, elle aussi bien longue.")
+    assert longues == ["Voici la première phrase, assez longue pour partir seule.",
+                       "Et la deuxième phrase, elle aussi bien longue."]
+
+
+def test_masquer_codes():
+    from modules import masquer_codes
+    assert masquer_codes("Votre code est 482913.") == "Votre code est (code masqué)."
+    assert masquer_codes("G-1234 est ton code Google", "••••") == "G-•••• est ton code Google"
+    assert masquer_codes("Code WhatsApp : 123-456") == "Code WhatsApp : (code masqué)"
+    # les numéros de téléphone, les heures et les petits nombres restent lisibles
+    for texte in ("Rappelle-moi au 06 12 34 56 78", "ou au 0612345678", "rdv à 14:05", "j'ai eu 15/20"):
+        assert masquer_codes(texte) == texte
+
+
+def test_annonces_telephone():
+    from modules.annonces import a_annoncer
+    sms = {"source": "telephone", "type": "sms", "titre": "Maman", "texte": "Ton code : 4829. Tu rentres quand ?"}
+    assert phrase(sms) == "SMS de Maman : Ton code : (code masqué). Tu rentres quand ?"
+    assert phrase({"source": "telephone", "type": "appel", "titre": "Lucas", "texte": "Appel entrant"}) \
+        == "Lucas t'appelle sur ton téléphone."
+    assert phrase({"source": "telephone", "type": "appel", "titre": "Lucas", "texte": "Appel manqué"}) \
+        == "Appel manqué de Lucas."
+    assert phrase({"source": "telephone", "type": "batterie", "titre": "Batterie du téléphone",
+                   "texte": "15 % restants"}) == "Ton téléphone n'a plus que 15 % de batterie."
+    appli = {"source": "telephone", "type": "appli", "titre": "WhatsApp — Tom", "texte": "on se voit demain ?"}
+    assert phrase(appli) == "WhatsApp sur ton téléphone, de Tom : on se voit demain ?"
+    cfg = {"telephone": True, "telephone_applis": False, "discord": True}
+    assert a_annoncer(cfg, sms) and not a_annoncer(cfg, appli)
+    assert a_annoncer({**cfg, "telephone_applis": True}, appli)
+    assert not a_annoncer({**cfg, "telephone": False}, sms)
+    assert not a_annoncer(cfg, {"source": "jarvis"})
+
+
+def test_contexte_telephone():
+    from modules.givre_infos import resume
+    e = {"telephone": [{"type": "sms", "de": "Maman", "texte": "Code 123456", "heure": "14:02", "appli": ""},
+                       {"type": "appel", "de": "Lucas", "texte": "Appel manqué", "heure": "13:50", "appli": ""}]}
+    texte = resume(e)
+    assert "14:02 SMS de Maman : « Code (code masqué) »" in texte and "13:50 appel manqué de Lucas" in texte
+    assert "123456" not in texte
+    assert "TÉLÉPHONE : rien reçu" in resume({"telephone": {"connecte": False}})
+
+
+def test_contexte_notes_masquees():
+    from modules.givre_infos import resume
+    texte = resume({"pronote": {"connecte": True, "notes_masquees": True,
+                                "notes": [{"matiere": "Maths", "note": "19/20"}],
+                                "moyenne_generale": "18,5/20"}})
+    assert "masquer ses notes" in texte
+    assert "19/20" not in texte and "18,5/20" not in texte

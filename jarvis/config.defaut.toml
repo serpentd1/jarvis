@@ -4,13 +4,13 @@
 
 [general]
 nom = "Jarvis"
-# Phrase dite au démarrage (laisse vide pour démarrer en silence).
+# Phrase dite au démarrage (salut tu veut fair quoi aujourd'hui).
 phrase_demarrage = "Jarvis est prêt."
-# Lance la barre Givre (l'île en haut de l'écran) en même temps que Jarvis.
+# Lance l'île Jarvis (moteur natif) en même temps que l'assistant vocal.
 lancer_givre = true
-# Chemin de Givre.exe (vide = cherché tout seul) et options de lancement.
+# Chemin de la barre, JarvisBarre.exe (vide = cherchée toute seule), et options de lancement.
 givre_exe = ""
-givre_arguments = "--ile"
+givre_arguments = ""
 
 [micro]
 # Vide = micro par défaut de Windows. Sinon, un morceau de son nom (ex : "Razer").
@@ -26,15 +26,28 @@ attente_debut = 6
 # Après sa réponse, Jarvis t'écoute encore ce nombre de secondes : tu peux continuer
 # à lui parler sans redire « Hey Jarvis ». 0 = désactivé.
 conversation = 5
+# Conversation continue : après sa réponse, Jarvis continue à t'écouter tant que tu ne dis pas
+# « stop » (ou « Jarvis stop », « c'est bon », « au revoir »…). false = seulement les secondes ci-dessus.
+conversation_continue = true
+# Sans personne qui parle pendant ce nombre de secondes, la conversation se termine toute seule.
+fin_conversation = 60
+# Pendant la conversation, il faut parler au moins aussi fort que ça (la télé ou les bruits ne
+# comptent pas). Monte-le (500, 800) s'il réagit tout seul, baisse-le (200) s'il ne t'entend pas.
+volume_conversation = 350
 # Petit « ding » quand Jarvis t'écoute.
 ding = true
 # Dire « Hey Jarvis » pendant qu'il parle le coupe.
 interrompre = true
+# Couper Jarvis en lui parlant (2 ou 3 mots suffisent), sans dire « Hey Jarvis ». Mets false s'il se coupe
+# tout seul à cause du son de ses haut-parleurs (avec un casque, ça marche le mieux).
+couper_en_parlant = true
 
 [transcription]
-# Modèle Whisper : "large-v3-turbo" (précis), "small" (rapide, ou si pas de carte NVIDIA)…
+# "parakeet" (le plus précis, 25 langues européennes, ~700 Mo)
+# ou un modèle Whisper : "large-v3-turbo", "small" (rapide, ou si pas de carte NVIDIA)…
 modele = "large-v3-turbo"
 # "auto" = carte graphique si possible, sinon processeur. Ou "cuda" / "cpu".
+# (Parakeet tourne sur le processeur en "auto" : c'est plus rapide pour lui.)
 appareil = "auto"
 precision = "float16"
 
@@ -52,6 +65,10 @@ volume = 1.0
 ollama_url = "http://127.0.0.1:11434"
 # qwen3.5:4b : rapide (≈0,3 s), léger (3,4 Go), sait déclencher des actions.
 modele = "qwen3.5:4b"
+# Facultatif : un petit modèle rapide rien que pour les ORDRES (« lance Discord », « mets un minuteur »…).
+# Le modèle ci-dessus sert alors aux discussions. Vide = le même modèle pour tout.
+# Attention : deux modèles chargés prennent plus de mémoire graphique.
+modele_rapide = ""
 # Nombre d'échanges dont Jarvis se souvient (voix + chat de l'île).
 historique = 3
 # Taille de la mémoire de travail du modèle (plus grand = plus de mémoire graphique).
@@ -62,7 +79,7 @@ garder_en_memoire = "30m"
 temperature = 0.4
 
 [givre]
-url = "http://127.0.0.1:47800"
+url = "http://127.0.0.1:47802"
 
 [serveur]
 # API locale de Jarvis (l'île Givre et l'extension Chrome s'y connectent).
@@ -75,6 +92,10 @@ pronote = true
 mail = true
 discord = true
 minuteur = true
+# SMS, appels et batterie faible du téléphone (relié par « Mobile connecté »). Les codes ne sont jamais lus.
+telephone = true
+# Aussi les notifications des applis du téléphone (WhatsApp, Instagram…).
+telephone_applis = false
 # Pas d'annonces sur ce créneau (vide = jamais silencieux). Exemple : "22:00-07:00".
 ne_pas_deranger = ""
 # Lire à voix haute les réponses aux questions tapées dans l'île.
@@ -85,6 +106,12 @@ lire_reponses_ile = false
 confirmer_avant_envoi = true
 # Nombre de messages gardés en mémoire.
 memoire = 30
+
+[whatsapp]
+# Quand tu dis « appelle … » pour une de ces personnes, Jarvis l'appelle avec WhatsApp sur le PC
+# (pas besoin de dire « avec WhatsApp »). Il te demande toujours « oui » avant d'appeler.
+# Écris le nom comme dans tes contacts WhatsApp. Exemple : contacts = ["Anaïs", "Maman"]
+contacts = []
 
 [mise_a_jour]
 # Jarvis se met à jour tout seul depuis les « Releases » GitHub. Vide = le dépôt d'origine (fichier DEPOT).
@@ -112,6 +139,9 @@ explorateur = "Explorateur de fichiers"
 calculette = "Calculatrice"
 musique = "Spotify"
 roblox = "Roblox Player"
+# la transcription écrit souvent « Cloud » pour « Claude » (sinon ça ouvre Darty Cloud)
+cloud = "Claude"
+clod = "Claude"
 
 # Sites ouverts par « ouvre … » quand aucune application ne porte ce nom.
 [sites]

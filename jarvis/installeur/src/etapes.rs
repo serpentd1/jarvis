@@ -101,7 +101,7 @@ fn etapes(o: &Options) -> Result<(), String> {
     std::fs::create_dir_all(d).map_err(|e| format!("impossible de créer {} : {e}", d.display()))?;
     arreter_programmes(d);
 
-    etat("Copie de Jarvis et de la barre Givre");
+    etat("Copie de Jarvis et de sa barre");
     progres(30);
     let ancienne_config = std::fs::read(d.join("config.toml")).ok();
     let zip = std::env::temp_dir().join(format!("jarvis-installation-{}.zip", std::process::id()));
@@ -311,7 +311,7 @@ fn telecharger(url: &str, cible: &Path) -> Result<(), String> {
     powershell(&format!("Invoke-WebRequest -UseBasicParsing -Uri '{url}' -OutFile {}", ps(cible))).map(|_| ())
 }
 
-/// Arrête Jarvis et Givre s'ils tournent depuis ce dossier (mise à jour), sans toucher aux autres.
+/// Arrête Jarvis et sa barre s'ils tournent depuis ce dossier (mise à jour), sans toucher aux autres.
 fn arreter_programmes(d: &Path) {
     let _ = powershell(&format!(
         "Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.StartsWith({}, 'OrdinalIgnoreCase') -and $_.ProcessId -ne {} }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}",
@@ -455,7 +455,7 @@ fn inscrire_desinstallation(d: &Path) -> Result<(), String> {
     let icone = format!("{},0", d.join("Jarvis.exe").display());
     let dossier = d.display().to_string();
     for (nom, valeur) in [
-        ("DisplayName", "Jarvis (assistant vocal + barre Givre)"),
+        ("DisplayName", "Jarvis (assistant vocal + sa barre)"),
         ("DisplayVersion", version.as_str()),
         ("Publisher", "Jarvis"),
         ("UninstallString", commande.as_str()),
@@ -519,7 +519,7 @@ pub fn desinstaller() {
         return;
     }
     if boite(
-        "Désinstaller Jarvis et la barre Givre ?\n\n(Ollama, ses modèles et tes réglages Givre sont gardés.)",
+        "Désinstaller Jarvis et sa barre ?\n\n(Ollama, ses modèles et tes réglages sont gardés.)",
         MB_YESNO | MB_ICONQUESTION,
     ) != IDYES
     {

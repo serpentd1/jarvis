@@ -1,5 +1,10 @@
 # Givre — widgets de bureau en verre flou
 
+> **Depuis le 16/11/2026, ces widgets font partie de Jarvis (une seule appli, une seule icône).**
+> `jarvis\barre\JarvisBarre.exe` affiche l'île ET ces widgets. Au premier lancement, Jarvis ferme Givre,
+> reprend la disposition des widgets et remplace le démarrage « Givre » par « Jarvis ». Si Jarvis tourne,
+> `Givre.exe` ne s'ouvre plus : il montre juste les réglages de Jarvis. Ce dossier reste comme version autonome.
+
 Heure, date, météo (ville réglable), calendrier, compte à rebours des vacances scolaires et Pronote.
 Écrit en Rust, en Win32 natif : un seul `Givre.exe`, sans navigateur caché.
 Environ 6 Mo de RAM quand les widgets sont cachés, 0 % de processeur au repos.
@@ -103,41 +108,8 @@ Il faut avoir connecté Google *avec cette version* de Givre (elle demande en pl
 
 Pour vérifier que Pronote répond : `givre.exe --pronote-test DOSSIER` (sans compte, écrit `pronote_test.txt`).
 
-## Dynamic Island (barre en haut de l'écran)
-
-Test : double-clic sur `Lancer-Ile.bat` (ou `givre.exe --ile` ; `givre.exe --widgets` pour revenir aux widgets).
-Survole la pilule en haut de l'écran pour l'ouvrir. Clic droit sur l'île : menu (mode île, réglages de l'île).
-
-- **Clic** sur un devoir, une note, un mail ou un message Discord : la page de détail s'ouvre dans l'île.
-  **Double-clic** : ouvre la vraie page (Pronote, le mail dans Gmail, Discord dans le navigateur).
-- Dans la page Devoirs, cliquer le rond coche / décoche le devoir (comme dans Pronote).
-- **Chrono et minuteurs** : boutons +1/+5/+10 min (réglables), pause, suppression ; le minuteur en cours reste visible dans la pilule.
-- **Alarme** : interrupteur, heures et minutes avec − / +, jours (clic sur « tous les jours »).
-- **Assistant** : clique le champ, écris, Entrée (Échap : annuler, Ctrl+V : coller). Il se souvient des derniers échanges
-  (3 par défaut), connaît Pronote, les mails, la météo et les minuteurs, et peut lancer un minuteur, régler l'alarme,
-  piloter le chrono, ouvrir un mail ou Pronote. Modèle par défaut : `qwen2.5:7b` (sinon celui des réglages mails).
-- **Discord (lecture seule)** : les MP sont lus dans les notifications Windows (appli Discord ou Discord dans Chrome/Edge),
-  et le nombre de non-lus dans le titre de l'onglet Chrome « (3) Discord ». Aucun jeton, aucun pilotage du compte.
-
-### Réglages de l'île
-Engrenage en haut à droite de l'île ouverte (ou clic droit › « Réglages de l'île… »). Plus de 120 options en 13 onglets :
-Apparence, Effets (verre, flou, lueur, ombre, fondu), Taille et position, Texte (police, taille, gras, mode pirate),
-Heure et date, Météo (unités, icônes animées, fond coloré, petite phrase), Modules (affichés + ordre), Minuteurs et alarme,
-Pronote et mails (fréquence de vérification des mails, ce qui compte comme important…), IA et Jarvis, Notifications
-(source par source, dans l'île et/ou Windows, ne pas déranger), Animations, Options rigolotes (arc-en-ciel, disco, confettis,
-petit animal, yeux, neige, compliments). Clic gauche : valeur suivante ; clic droit : précédente. Tout est enregistré dans
-`%APPDATA%\Givre\config.json` (bloc `"ile"`, chaque option est commentée dans `src/config.rs`).
-
-### API locale pour Jarvis
-`http://127.0.0.1:47800` (seulement ce PC ; port réglable, désactivable). JSON en UTF-8.
-- `GET /etat` → `{"ok":true, "heure", "date", "meteo", "pronote", "mails", "minuteurs", "chrono", "alarme", "discord", "jarvis"}`
-- `POST /demander` `{"texte":"…","source":"jarvis"}` → `{"ok":true,"reponse":"…"}` (même IA et même mémoire que l'île, jusqu'à ~2 min)
-- `POST /jarvis` `{"etat":"repos|ecoute|reflechit|parle","texte":"…"}` → `{"ok":true}` (indicateur dans l'île)
-- `POST /notif` `{"titre":"…","texte":"…","source":"jarvis|pronote|mail|discord|minuteur"}` → `{"ok":true}`
-Les requêtes envoyées par une page web (en-tête `Origin`) sont refusées.
-
-Profil de test séparé : `set GIVRE_PROFIL=C:\un\dossier` avant de lancer `givre.exe` (réglages et comptes à part,
-peut tourner à côté du Givre normal).
+## La barre en haut de l'écran
+La barre « Dynamic Island » ne fait plus partie de Givre : c'est maintenant la barre de Jarvis (dossier `jarvisarre`, `JarvisBarre.exe`). Givre ne garde que les widgets du bureau et n'a plus de lien avec Jarvis.
 
 ## Confidentialité
 Tes connexions (Google, Hotmail, Discord, Pronote) sont dans `%APPDATA%\Givre\comptes.bin`, chiffré par Windows :

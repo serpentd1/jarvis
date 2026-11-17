@@ -66,40 +66,49 @@ class Givre:
     def chrono(self, commande: str):
         return self._appel("POST", "/chrono", {"commande": commande})
 
-    def ouvrir(self, quoi: str, n: int = 0):
-        return self._appel("POST", "/ouvrir", {"quoi": quoi, "n": n})
+    def ouvrir(self, quoi: str, n: int = 0, section: str = ""):
+        """quoi = "grande" déplie l'île en grand, sur `section` (taches, rappels, memoire, pc…) si donnée."""
+        return self._appel("POST", "/ouvrir", {"quoi": quoi, "n": n, **({"section": section} if section else {})})
 
     def actualiser_meteo(self):
         return self._appel("POST", "/meteo/actualiser", {})
 
+    def quitter(self):
+        """Ferme la barre (île + widgets) : Jarvis et sa barre forment une seule appli."""
+        self._absent_jusqua = 0
+        return self._appel("POST", "/quitter", {}, 2)
+
     def notif(self, titre: str, texte: str, source: str = "jarvis"):
         self._en_fond("POST", "/notif", {"titre": titre, "texte": texte, "source": source})
 
-    def etat_jarvis(self, etat: str, texte: str = "", question: str = "", reponse: str = ""):
-        """Montre dans l'île si Jarvis écoute, réfléchit ou parle (et la conversation)."""
+    def etat_jarvis(self, etat: str, texte: str = "", question: str = "", reponse: str = "", duree: float = 0.0):
+        """Montre dans l'île si Jarvis écoute, réfléchit ou parle (et la conversation).
+        `duree` : secondes que dure la phrase dite, pour l'afficher mot par mot."""
         donnees = {"etat": etat, "texte": texte}
+        if duree > 0:
+            donnees["duree"] = round(duree, 2)
         if question or reponse:
             donnees.update(question=question, reponse=reponse)
         self._en_fond("POST", "/jarvis", donnees)
 
     # ── lancement ────────────────────────────────────────────
     def trouver_exe(self, chemin_config: str = ""):
+        """La barre de Jarvis (l'île en haut de l'écran) : à côté de Jarvis une fois installé, sinon la version compilée.
+        Givre, l'appli de widgets, est une autre appli : Jarvis ne s'en sert plus."""
         candidats = [Path(chemin_config)] if chemin_config else []
-        candidats += [RACINE / "Givre.exe", RACINE / "givre.exe",
-                      RACINE.parent / "givre" / "target" / "release" / "givre.exe",
-                      RACINE.parent / "givre" / "Givre.exe"]
+        candidats += [RACINE / "JarvisBarre.exe", RACINE / "barre" / "target" / "release" / "JarvisBarre.exe"]
         return next((c for c in candidats if c.is_file()), None)
 
     def lancer(self, chemin_config: str = "", arguments: str = "") -> bool:
         self._absent_jusqua = 0
         if self.disponible():
             return True
-        self._absent_jusqua = 0          # Givre démarre : on veut le voir arriver tout de suite
+        self._absent_jusqua = 0          # la barre démarre : on veut la voir arriver tout de suite
         exe = self.trouver_exe(chemin_config)
         if not exe:
-            log.info("Givre introuvable : je continue sans la barre.")
+            log.info("Barre introuvable (JarvisBarre.exe) : je continue sans elle.")
             return False
-        log.info("Je lance Givre : %s %s", exe, arguments)
+        log.info("Je lance la barre : %s %s", exe, arguments)
         subprocess.Popen([str(exe), *arguments.split()], cwd=exe.parent, creationflags=DETACHE,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True

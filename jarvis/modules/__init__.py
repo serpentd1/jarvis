@@ -66,6 +66,24 @@ class Registre:
     contextes: list = field(default_factory=list)
     taches: list = field(default_factory=list)
     caches: set = field(default_factory=set)          # outils utilisables par les raccourcis seulement
+    apis: dict = field(default_factory=dict)          # nom -> fonction(methode, donnees) pour la grande application
+    apres_echanges: list = field(default_factory=list)  # fonction(question, reponse, source) après chaque échange
+    intercepteurs: list = field(default_factory=list)   # fonction(texte, normalise) -> phrase | None, avant tout
+    fins: list = field(default_factory=list)            # fonction() -> phrase | None, quand on dit « stop »
+
+    def intercepteur(self, fonction):
+        """Prend la main sur ce que dit l'utilisateur (ex. : ses réponses pendant une révision)."""
+        self.intercepteurs.append(fonction)
+
+    def fin_conversation(self, fonction):
+        self.fins.append(fonction)
+
+    def api(self, nom: str, fonction):
+        """GET/POST /api/<nom> de la grande application : fonction(methode, donnees) -> dict."""
+        self.apis[nom] = fonction
+
+    def apres_echange(self, fonction):
+        self.apres_echanges.append(fonction)
 
     def outil(self, nom, description, parametres, requis, fonction):
         self.outils[nom] = Outil(nom, description, parametres, requis, fonction)
@@ -131,6 +149,16 @@ def normaliser(texte: str) -> str:
     texte = sans_accents(texte.lower()).replace("’", "'")
     texte = re.sub(r"[^a-z0-9' ]+", " ", texte)
     return re.sub(r"\s+", " ", texte).strip()
+
+
+# Codes de vérification : 4 à 8 chiffres d'affilée (« 482913 », « G-1234 ») ou « 123 456 ».
+# Les numéros de téléphone (10 chiffres, ou groupés par 2) et les heures ne sont pas touchés.
+CODES = re.compile(r"(?<!\d)(?:\d{4,8}|\d{3}[ -]\d{3})(?!\d)")
+
+
+def masquer_codes(texte: str, remplacement: str = "(code masqué)") -> str:
+    """Cache les codes reçus par SMS ou par mail avant de les dire à voix haute ou de les donner à l'IA."""
+    return CODES.sub(remplacement, str(texte or ""))
 
 
 NOMBRES = {

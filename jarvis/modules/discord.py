@@ -84,6 +84,23 @@ def installer(ctx, reg):
         return Resultat(f"J'envoie à {destinataire} : « {message} ». C'est bon ?", confirmer=envoyer,
                         annuler="D'accord, je ne l'envoie pas.")
 
+    def appeler_discord(destinataire: str):
+        """Appel vocal Discord, toujours après ton « oui »."""
+        if not ctx.pont.connecte:
+            return Resultat(INSTALLER_EXTENSION, ok=False)
+        destinataire = (destinataire or "").strip().strip("«»\"' ")
+        if not destinataire:
+            return Resultat("Qui veux-tu appeler sur Discord ?", ok=False)
+
+        def appeler():
+            r = ctx.pont.commande({"commande": "discord_appeler", "destinataire": destinataire}, delai=20)
+            if r and r.get("ok"):
+                return Resultat(f"J'appelle {destinataire} sur Discord.")
+            return Resultat(f"Je n'ai pas pu appeler : {(r or {}).get('erreur', 'Chrome ne répond pas')}.", ok=False)
+
+        return Resultat(f"Tu es sûr de vouloir appeler {destinataire} sur Discord ?", confirmer=appeler,
+                        annuler="D'accord, je n'appelle pas.")
+
     def contexte():
         if not ctx.pont.connecte:
             lignes = ["DISCORD : l'extension Chrome de Jarvis n'est PAS installée ou pas connectée, donc tu ne vois "
@@ -110,6 +127,12 @@ def installer(ctx, reg):
               {"message": "le texte exact à envoyer, tel que l'utilisateur l'a dicté",
                "destinataire": "à qui (pseudo) ; vide = la dernière personne qui a écrit"},
               ["message"], repondre_discord)
+    reg.outil("appeler_discord",
+              "Lance un appel vocal DISCORD avec quelqu'un (Jarvis demande toujours confirmation avant).",
+              {"destinataire": "qui appeler (pseudo Discord)"}, ["destinataire"], appeler_discord)
+    # « Appelle Tom sur Discord », « appelle Léa avec Discord » (avant le raccourci « appelle … » du téléphone)
+    reg.regle(r"^(?:appelle|appel|appeler|passe un appel a) (?P<a>.+?)(?: (?:avec|sur|par|via|depuis|en|dans))? discord$",
+              lambda m, t: [("appeler_discord", {"destinataire": m["a"]})], priorite=4)
     reg.regle(r"^(?:lis|lit|lire|donne)(?: moi)? (?:mes |les )?(?:derniers |nouveaux )?messages? (?:sur |de |discord)",
               lambda m, t: [("lire_messages_discord", {})], priorite=30)
     # « On voit un message sur Discord ? », « j'ai des messages Discord ? », « Discord, j'ai des MP ? »

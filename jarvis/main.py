@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import types
+from collections import deque
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
@@ -42,6 +43,7 @@ class Jarvis:
         self.pont = Pont()
         self.cerveau = self.reg = None
         self.voix = self.stt = self.micro = self.mot = None
+        self._verrou_stt = threading.Lock()
         self.ctx = types.SimpleNamespace(cfg=self.cfg, givre=self.givre, pont=self.pont, etat=self.etat,
                                          simulation=bool(args.test), appels=[])
 
@@ -51,6 +53,7 @@ class Jarvis:
         from core.cerveau import Cerveau
         self.reg = modules.charger(self.ctx)
         self.cerveau = Cerveau(self.cfg["cerveau"], self.cfg["general"]["nom"], self.reg)
+        self.ctx.cerveau = self.cerveau
         self.cerveau.prechauffer()
         for tache in self.reg.taches:
             threading.Thread(target=self._tache, args=(tache,), daemon=True, name=tache.__name__).start()
@@ -71,7 +74,9 @@ class Jarvis:
             from core.stt import Transcripteur
             t = time.time()
             self.stt = Transcripteur(self.cfg["transcription"])
-            log.info("Transcription prête sur %s (%.0f s)", self.stt.appareil, time.time() - t)
+            log.info("Transcription %s prête sur %s (%.0f s)", self.stt.nom, self.stt.appareil, time.time() - t)
+            self.ctx.changer_transcription = self.changer_transcription
+            self.ctx.transcription_actuelle = lambda: self.stt.nom
         if avec_micro:
             from core.audio import Micro
             from core.wakeword import MotActivation
@@ -86,6 +91,31 @@ class Jarvis:
             config.ecrire_valeur("voix", "voix", nom)
         except Exception:  # noqa: BLE001
             log.exception("config.toml non modifié")
+
+    def changer_transcription(self, modele: str, annoncer: bool = False):
+        """Passe de Parakeet à Whisper (ou l'inverse) sans redémarrer, et le garde dans config.toml.
+        L'ancien modèle continue d'écouter pendant que le nouveau se charge."""
+        from core import stt
+        with self._verrou_stt:
+            if modele == self.stt.nom:
+                return
+            try:
+                t = time.time()
+                nouveau = stt.Transcripteur({**self.cfg["transcription"], "modele": modele})
+            except Exception:  # noqa: BLE001
+                log.exception("changement de transcription")
+                if annoncer:
+                    self.etat.annoncer(f"Je n'ai pas réussi à passer sur {stt.titre(modele)}.")
+                return
+            self.stt = nouveau
+            self.cfg["transcription"]["modele"] = nouveau.nom
+            log.info("Transcription %s prête sur %s (%.0f s)", nouveau.nom, nouveau.appareil, time.time() - t)
+            try:
+                config.ecrire_valeur("transcription", "modele", nouveau.nom)
+            except Exception:  # noqa: BLE001
+                log.exception("config.toml non modifié")
+            if annoncer:
+                self.etat.annoncer(f"C'est fait, je t'écoute maintenant avec {stt.titre(nouveau.nom)}.")
 
     def _changer_voix_et_dire(self, nom: str):
         if not self.voix or nom == self.voix.nom:
@@ -106,18 +136,22 @@ class Jarvis:
                           changer_voix=self._changer_voix_et_dire)
         if not serveur.demarrer():
             return 0
-        self.etat.abonner(lambda e, t, q, r: self.givre.etat_jarvis(e, t, q, r))
-        icone = None
-        try:
-            from core.icone import Icone
-            icone = Icone(self.etat, self.givre, self.cfg["general"],
-                          voix_actuelle=lambda: self.voix.nom if self.voix else None,
-                          changer_voix=lambda nom: threading.Thread(target=self._changer_voix_et_dire, args=(nom,),
-                                                                    daemon=True).start())
-            icone.demarrer()
-        except Exception:  # noqa: BLE001
-            log.exception("icône indisponible")
+        self.etat.abonner(lambda e, t, q, r: self.givre.etat_jarvis(e, t, q, r, self.etat.duree))
         g = self.cfg["general"]
+        # Une seule appli, une seule icône : quand la barre (île + widgets) est là, c'est SON icône près de
+        # l'horloge qui sert pour tout. L'icône « J » de Python ne sert plus que si la barre manque.
+        avec_barre = bool(g["lancer_givre"] and self.givre.trouver_exe(g["givre_exe"]))
+        icone = None
+        if not avec_barre:
+            try:
+                from core.icone import Icone
+                icone = Icone(self.etat, self.givre, g,
+                              voix_actuelle=lambda: self.voix.nom if self.voix else None,
+                              changer_voix=lambda nom: threading.Thread(target=self._changer_voix_et_dire,
+                                                                        args=(nom,), daemon=True).start())
+                icone.demarrer()
+            except Exception:  # noqa: BLE001
+                log.exception("icône indisponible")
         if g["lancer_givre"]:
             threading.Thread(target=self.givre.lancer, args=(g["givre_exe"], g["givre_arguments"]), daemon=True).start()
         self.charger_cerveau()
@@ -143,6 +177,8 @@ class Jarvis:
                 icone.arreter()
             if self.micro:
                 self.micro.arreter()
+            if avec_barre and not self.etat.redemarrer:
+                self.givre.quitter()          # « Quitter Jarvis » : l'île et les widgets partent aussi
         return CODE_REDEMARRER if self.etat.redemarrer else 0
 
     def _surveiller_lanceur(self, pid: int):
@@ -162,12 +198,16 @@ class Jarvis:
             self.etat.ecouter_maintenant.set()
 
     def boucle(self):
+        from core.audio import BLOC, FREQ
+
         micro_ouvert = False
+        avant = deque(maxlen=int(2.0 * FREQ / BLOC))
         while not self.etat.quitter.is_set():
             if self.micro and self.etat.micro != micro_ouvert:
                 (self.micro.demarrer if self.etat.micro else self.micro.pause)()
                 micro_ouvert = self.etat.micro
                 self.mot.reinitialiser()
+                avant.clear()
                 log.info("Micro %s", "allumé" if micro_ouvert else "coupé")
                 self.etat.changer(self.etat.etat)
             if self.voix and not self.etat.annonces.empty():
@@ -175,10 +215,13 @@ class Jarvis:
                 self.etat.changer("parle", phrase)
                 interrompu = self.parler(phrase)
                 self.etat.changer("repos")
-                if interrompu:
+                if interrompu and self.coupure:     # annonce coupée par ta voix
+                    self.cerveau.coupe = phrase
+                    self.ecouter("coupe", self.coupure)
+                elif interrompu:
                     self.ecouter()
                 elif micro_ouvert and self.etat.annonces.empty() and float(self.cfg["micro"]["conversation"]) > 0:
-                    self.ecouter("conversation")      # « réponds-lui que… » sans redire « Hey Jarvis »
+                    self.ecouter("annonce")           # « réponds-lui que… » sans redire « Hey Jarvis »
                 continue
             if self.etat.ecouter_maintenant.is_set():
                 self.etat.ecouter_maintenant.clear()
@@ -188,35 +231,49 @@ class Jarvis:
                 time.sleep(0.2)
                 continue
             bloc = self.micro.bloc(0.25)
+            if bloc is not None:
+                avant.append(bloc)
             if bloc is not None and self.mot.entendu(bloc):
                 log.info("« Hey Jarvis » entendu")
                 self.mot.reinitialiser()
-                self.ecouter()
+                self.ecouter(avant=list(avant))
+                avant.clear()
 
-    def ecouter(self, mode: str = "normal"):
+    def ecouter(self, mode: str = "normal", avant=None):
         """mode : "normal" (après « Hey Jarvis »), "question" (Jarvis attend oui/non),
         "conversation" (suite de la discussion, sans redire « Hey Jarvis »)."""
         if not (self.micro and self.stt and self.cerveau):
             return
         while mode and not self.etat.quitter.is_set():
-            mode = self._un_echange(mode)
+            mode = self._un_echange(mode, avant)
+            avant = self.coupure if mode == "coupe" else None     # le début de ta phrase, quand tu l'as coupé
 
-    def _un_echange(self, mode: str):
+    def _un_echange(self, mode: str, avant=None):
         """Écoute une phrase, répond, et dit comment continuer (ou None pour revenir à « Hey Jarvis »)."""
         from core.audio import ding
-        from core.cerveau import enlever_mot_activation
+        from core.cerveau import STOP, commande_autour_du_mot, enlever_mot_activation
+        from modules import normaliser
         m = self.cfg["micro"]
         conversation = float(m["conversation"])
+        continuer = bool(m["conversation_continue"])
+        discussion = mode in ("conversation", "annonce", "coupe")   # pas de « ding », et il faut parler assez fort
+        if mode == "conversation":
+            attente = float(m["fin_conversation"]) if continuer else conversation
+        elif mode == "coupe":                       # tu viens de lui couper la parole : tu parles déjà
+            attente = 2.0
+        else:
+            attente = conversation if mode == "annonce" else float(m["attente_debut"])
         deja_ouvert = self.micro.flux.active
         self.micro.demarrer()
         try:
-            self.etat.changer("ecoute", "Je t'écoute…")
-            if m["ding"] and mode != "conversation":
+            self.etat.changer("ecoute", "On discute… (dis « stop » pour finir)" if mode == "conversation" and continuer
+                              else "Je t'écoute…")
+            if m["ding"] and not discussion:
                 ding(aigu=mode == "question")
             audio = self.micro.enregistrer_commande(
-                float(m["silence_fin"]), float(m["duree_max"]),
-                conversation if mode == "conversation" else float(m["attente_debut"]),
-                ignorer_debut=0.0 if mode == "conversation" else 0.3)
+                float(m["silence_fin"]), float(m["duree_max"]), attente,
+                ignorer_debut=0.0 if discussion else 0.3, voix_min=0.35 if discussion else 0.24,
+                volume_min=float(m["volume_conversation"]) if discussion else 150.0, prefixe=avant)
         finally:
             if not deja_ouvert:
                 self.micro.pause()
@@ -225,41 +282,188 @@ class Jarvis:
             return None
         self.etat.changer("reflechit")
         texte = self.stt.transcrire(audio)
+        if avant:
+            texte = commande_autour_du_mot(texte)
         if not texte.strip():
             log.info("(rien compris)")
             self.etat.changer("repos")
-            return None
+            return "conversation" if mode == "conversation" else None    # un bruit ne coupe pas la discussion
         log.info("Toi    : %s", texte)
+        if discussion and STOP.match(normaliser(texte)):
+            log.info("Fin de la conversation")
+            self.parler(self.cerveau.fin_conversation() or "D'accord, à plus tard !")
+            self.etat.changer("repos")
+            return None
+        if self._reglage_micro_demande(texte):
+            self.regler_micro()
+            self.etat.changer("repos")
+            return None
         self.etat.changer("reflechit", texte)
-        rep = self.cerveau.repondre(texte, "voix")
-        log.info("Jarvis : %s", rep.texte)
-        self.etat.changer("parle", rep.texte, question=enlever_mot_activation(texte) or texte, reponse=rep.texte)
-        interrompu = self.parler(rep.texte)
+        # Le cerveau réfléchit dans un fil à part : Jarvis commence à parler dès la première phrase prête.
+        import queue
+        from core.cerveau import Reponse
+        phrases, resultat = queue.Queue(), {}
+
+        def penser():
+            try:
+                rep = self.cerveau.repondre(texte, "voix", sur_phrase=phrases.put)
+            except Exception:  # noqa: BLE001
+                log.exception("cerveau")
+                rep = Reponse("Oups, j'ai eu un bug. Tu peux répéter ?")
+            resultat["rep"] = rep
+            log.info("Jarvis : %s", rep.texte)
+            reste = rep.texte if rep.reste is None else rep.reste
+            if reste:
+                phrases.put(reste)
+            phrases.put(None)
+            # l'échange s'ajoute au fil du chat de l'île (sans changer l'état affiché)
+            self.givre.etat_jarvis("", "", enlever_mot_activation(texte) or texte, rep.texte)
+
+        fil = threading.Thread(target=penser, daemon=True, name="cerveau")
+        fil.start()
+        interrompu = self.parler(iter(phrases.get, None))
+        fil.join(120)
+        rep = resultat.get("rep") or Reponse("")
         self.etat.changer("repos")
         if interrompu:
+            if self.coupure:                       # coupé par ta voix : il t'écoute tout de suite, et le sait
+                self.cerveau.coupe = rep.texte
+                return "coupe"
             return "normal"
         if rep.suivi:
             return "question"
-        return "conversation" if conversation > 0 else None
+        return "conversation" if continuer or conversation > 0 else None
 
-    def parler(self, texte: str) -> bool:
-        """Dit la phrase. Renvoie True si on l'a coupé en disant « Hey Jarvis »."""
+    @staticmethod
+    def _reglage_micro_demande(texte: str) -> bool:
+        import re
+        from core.cerveau import enlever_mot_activation
+        from modules import normaliser
+        return bool(re.match(r"^(?:regle|calibre|ajuste|teste)(?: moi)? (?:mon |le |ton )?micro(?:phone)?$",
+                             normaliser(enlever_mot_activation(texte))))
+
+    def regler_micro(self):
+        """« Règle mon micro » : mesure le bruit de la pièce puis ta voix, et choisit `volume_conversation`
+        (le niveau qu'il faut dépasser pendant la conversation continue). Écrit dans config.toml."""
+        import numpy as np
+        from core.audio import niveau
+        from core.config import ecrire_valeur
+        m = self.cfg["micro"]
+        deja_ouvert = self.micro.flux.active
+        self.micro.demarrer()
+        try:
+            self.parler("D'accord. Ne dis rien pendant deux secondes.")
+            fond, fin = [], time.time() + 2.0
+            while time.time() < fin:
+                bloc = self.micro.bloc(0.5)
+                if bloc is not None:
+                    fond.append(niveau(bloc))
+            self.parler("Maintenant, dis une phrase normalement, comme si tu me parlais.")
+            audio = self.micro.enregistrer_commande(float(m["silence_fin"]), 8, 6, ignorer_debut=0.0)
+        finally:
+            if not deja_ouvert:
+                self.micro.pause()
+        if not len(audio) or not fond:
+            self.parler("Je ne t'ai pas entendu. Redis « règle mon micro » pour recommencer.")
+            return
+        brut, taille = audio * 32768.0, 1280
+        niveaux = [niveau(brut[i:i + taille]) for i in range(0, len(brut) - taille, taille)] or [0.0]
+        voix, bruit = float(np.percentile(niveaux, 75)), float(np.median(fond))
+        volume = int(max(bruit * 2.5, voix * 0.4, 120))
+        log.info("Réglage du micro : bruit %.0f, voix %.0f -> volume_conversation %d", bruit, voix, volume)
+        if volume >= voix * 0.8:
+            self.parler("Il y a trop de bruit autour de toi pour bien régler. Réessaie dans un endroit plus calme.")
+            return
+        ecrire_valeur("micro", "volume_conversation", volume)
+        m["volume_conversation"] = volume
+        self.parler("C'est réglé ! Pendant nos discussions, je réagirai à ta voix, mais pas aux petits bruits.")
+
+    @staticmethod
+    def decouper_phrases(texte: str, min_car: int = 40) -> list:
+        """Coupe la réponse en phrases (les très courtes sont regroupées) pour commencer à parler plus tôt."""
+        import re
+        morceaux = []
+        for phrase in re.split(r"(?<=[.!?…])\s+", texte.strip()):
+            if morceaux and len(morceaux[-1]) < min_car:
+                morceaux[-1] += " " + phrase
+            elif phrase:
+                morceaux.append(phrase)
+        return morceaux
+
+    def parler(self, texte) -> bool:
+        """Dit la réponse phrase par phrase : la 1re part pendant que la suite se prépare (moins d'attente).
+        `texte` : la réponse entière, ou des phrases qui arrivent au fur et à mesure (le cerveau réfléchit encore).
+        Chaque phrase dite est montrée dans l'île, mot par mot. Renvoie True si on l'a coupé en disant « Hey Jarvis »."""
+        import queue
         import sounddevice as sd
-        audio, freq = self.voix.synthetiser(texte)
-        sd.play(audio, freq)
-        fin = time.time() + len(audio) / freq + 0.1
-        ecoute = bool(self.micro and self.micro.flux.active and self.cfg["micro"]["interrompre"])
-        interrompu = False
-        while time.time() < fin and not self.etat.quitter.is_set():
-            if ecoute:
-                bloc = self.micro.bloc(0.1)
-                if bloc is not None and self.mot.score(bloc) >= max(self.mot.seuil, 0.7):
-                    interrompu = True
-                    log.info("Coupé par « Hey Jarvis »")
+        prets, arret = queue.Queue(), threading.Event()
+        en_direct = not isinstance(texte, str)
+        blocs = texte if en_direct else [texte]
+
+        def preparer():
+            try:
+                for bloc in blocs:
+                    for morceau in self.decouper_phrases(bloc) or [bloc]:
+                        if arret.is_set():
+                            return
+                        prets.put((morceau, self.voix.synthetiser(morceau)))
+            except Exception:  # noqa: BLE001
+                log.exception("synthèse de la voix")
+            finally:
+                prets.put(None)
+
+        import statistics
+        from collections import deque
+        from core.audio import BLOC, FREQ, niveau
+        threading.Thread(target=preparer, daemon=True, name="voix").start()
+        m = self.cfg["micro"]
+        ecoute = bool(self.micro and self.micro.flux.active and m["interrompre"])
+        # Couper Jarvis en lui parlant (2-3 mots) : il faut une voix nettement plus forte que l'écho de sa propre
+        # voix dans le micro, mesuré au début de chaque phrase.
+        couper = ecoute and bool(m.get("couper_en_parlant", True))
+        recents, duree_bloc = deque(maxlen=int(2.5 * FREQ / BLOC)), BLOC / FREQ
+        self.coupure, interrompu = None, False
+        try:
+            while not interrompu and not self.etat.quitter.is_set():
+                try:
+                    pret = prets.get(timeout=600 if en_direct else 30)   # en direct : le cerveau peut réfléchir longtemps
+                except queue.Empty:
                     break
-            else:
-                time.sleep(0.05)
-        sd.stop()
+                if pret is None:
+                    break
+                morceau, (audio, freq) = pret
+                self.etat.changer("parle", morceau, duree=len(audio) / freq)
+                sd.play(audio, freq)
+                debut, echo, fort = time.time(), [], 0.0
+                fin = debut + len(audio) / freq + 0.05
+                while time.time() < fin and not self.etat.quitter.is_set():
+                    if not ecoute:
+                        time.sleep(0.05)
+                        continue
+                    bloc = self.micro.bloc(0.1)
+                    if bloc is None:
+                        continue
+                    if self.mot.score(bloc) >= max(self.mot.seuil, 0.7):
+                        interrompu = True
+                        log.info("Coupé par « Hey Jarvis »")
+                        break
+                    if not couper:
+                        continue
+                    recents.append(bloc)
+                    n = niveau(bloc)
+                    if time.time() - debut < 0.5:
+                        echo.append(n)                     # l'écho de sa voix, au début de la phrase
+                        continue
+                    seuil = max(3.0 * statistics.median(echo) if echo else 0.0,
+                                1.3 * float(m["volume_conversation"]), 300.0)
+                    fort = fort + duree_bloc if n > seuil else max(0.0, fort - duree_bloc / 2)
+                    if fort >= 0.5:                        # environ 2 mots
+                        interrompu, self.coupure = True, list(recents)
+                        log.info("Coupé par ta voix")
+                        break
+        finally:
+            arret.set()
+            sd.stop()
         if self.micro:
             self.micro.vider()
         if self.mot:
@@ -303,6 +507,8 @@ class Jarvis:
 
         cas = [
             ("Hey Jarvis, lance-moi Discord", ["lancer_application"]),
+            ("Apprends ma leçon de maths", ["apprendre_lecon"]),
+            ("Fais-moi réciter ma leçon de maths", ["reciter_lecon"]),
             ("Mets un minuteur de 5 minutes pour les pâtes", ["minuteur"]),
             ("Mets la vidéo en pause", ["media"]),
             ("Baisse le son", ["volume"]),
@@ -327,6 +533,24 @@ class Jarvis:
             ("Envoie un message à Claude qui dit salut ça va", ["repondre_discord"]),
             ("Envoie salut à Matt", ["repondre_discord"]),
             ("Envoie un mail à mon prof", []),
+            ("Ajoute payer les factures à mes tâches", ["ajouter_tache"]),
+            ("Rappelle-moi dans 20 minutes de sortir le chien", ["ajouter_rappel"]),
+            ("J'ai fait mes 20 pompes", ["cocher_habitude"]),
+            ("Lance la routine du matin", ["lancer_routine"]),
+            ("Souviens-toi que mon meilleur ami s'appelle Tom", ["retenir"]),
+            ("Qu'est-ce que tu sais sur moi ?", ["ce_que_tu_sais"]),
+            ("Ouvre l'application Jarvis", ["ouvrir_application_jarvis"]),
+            ("Montre mes tâches", ["ouvrir_application_jarvis"]),
+            ("Es-tu connecté à Pronote ?", ["etat_pronote"]),
+            ("Quelle note j'ai en maths ?", []),
+            ("Comment va mon PC ?", ["etat_pc"]),
+            ("C'est quoi la batterie de ma manette ?", ["batteries"]),
+            ("Dis-moi ce que Claude fait", ["activite_claude"]),
+            ("Fais sonner mon téléphone", ["faire_sonner_telephone"]),
+            ("Où est mon portable ?", ["faire_sonner_telephone"]),
+            ("Qui m'a appelé ?", []),
+            ("J'ai reçu des SMS ?", []),
+            ("Envoie un message à Claude qui dit qu'il a fait ses devoirs", ["repondre_discord"]),
             ("Mets la playlist Electro Chill", ["jouer_deezer"]),
             ("Joue la chanson Bande organisée sur Deezer", ["jouer_deezer"]),
             ("Résume-moi le mail d'AliExpress", ["resumer_mail"]),

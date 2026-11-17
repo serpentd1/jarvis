@@ -44,13 +44,14 @@ class Icone:
                                    for nom, v in CATALOGUE.items()])
         menu = pystray.Menu(
             pystray.MenuItem("Parler maintenant", lambda: etat.ecouter_maintenant.set(), default=True),
+            pystray.MenuItem("Ouvrir la grande île", lambda: _ouvrir_application()),
             pystray.MenuItem("Micro activé", self._basculer_micro, checked=lambda _i: etat.micro),
             pystray.MenuItem("Voix", menu_voix),
             pystray.MenuItem("Démarrer avec Windows", self._basculer_demarrage,
                              checked=lambda _i: demarrage.est_active()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Ouvrir la barre Givre", lambda: givre.lancer(cfg_general["givre_exe"],
-                                                                           cfg_general["givre_arguments"])),
+            pystray.MenuItem("Ouvrir l'île Jarvis", lambda: givre.lancer(cfg_general["givre_exe"],
+                                                                         cfg_general["givre_arguments"])),
             pystray.MenuItem("Réglages (config.toml)", lambda: _ouvrir_texte(FICHIER_CONFIG)),
             pystray.MenuItem("Journal", lambda: _ouvrir_texte(FICHIER_JOURNAL)),
             pystray.Menu.SEPARATOR,
@@ -87,6 +88,20 @@ class Icone:
     def _redemarrer(self):
         self.etat.redemarrer = True
         self.etat.quitter.set()
+
+
+def _ouvrir_application():
+    """Déplie l'île Givre en grand : c'est l'appli de Jarvis (tâches, rappels, mémoire…)."""
+    import json
+    import urllib.request
+    from . import config
+    url = config.charger()["givre"]["url"].rstrip("/") + "/ouvrir"
+    requete = urllib.request.Request(url, data=json.dumps({"quoi": "grande"}).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(requete, timeout=3).close()
+    except OSError:
+        pass
 
 
 def _ouvrir_texte(chemin):

@@ -1,23 +1,34 @@
-# Construit dist\Installer-Jarvis.exe : UN seul fichier à donner (Jarvis + barre Givre + extension Chrome).
+# Construit dist\Installer-Jarvis.exe : UN seul fichier à donner, pour UNE seule appli (une seule icône) :
+# la voix de Jarvis + JarvisBarre.exe (l'île en haut de l'écran ET les widgets du bureau, ex-Givre) + extension Chrome.
+# L'icône (jarvis.ico) se redessine avec : .venv\Scripts\python.exe outils\icone_jarvis.py
 #   powershell -ExecutionPolicy Bypass -File outils\construire.ps1            (tout recompiler)
-#   powershell -ExecutionPolicy Bypass -File outils\construire.ps1 -SansGivre (réutiliser givre.exe déjà compilé)
-param([switch]$SansGivre)
+#   powershell -ExecutionPolicy Bypass -File outils\construire.ps1 -SansBarre (réutiliser la barre déjà compilée)
+param([switch]$SansBarre)
 
 $jarvis = Split-Path $PSScriptRoot -Parent
 $racine = Split-Path $jarvis -Parent
 $dist = Join-Path $jarvis "dist"
 # Les exe publiés ne doivent pas contenir ton chemin (C:\Users\<toi>\…) : on le remplace par « ~ ».
 $env:RUSTFLAGS = "--remap-path-prefix=$($env:USERPROFILE)=~"
+# Connexion Google pour tout le monde (tes potes) : le client OAuth de ton appli Google (google.json) est intégré à la
+# barre au moment de la compilation. Il n'est jamais dans le dépôt GitHub (google.json est exclu par .gitignore).
+$googleJson = @("$env:APPDATA\Jarvis\barre\google.json", "$env:APPDATA\Givre\google.json") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($googleJson) { $env:JARVIS_GOOGLE_CLIENT = Get-Content $googleJson -Raw }
 function Etape($texte) { Write-Host "`n== $texte ==" -ForegroundColor Cyan }
 function Verifier($quoi) { if ($LASTEXITCODE -ne 0) { Write-Host "ÉCHEC : $quoi" -ForegroundColor Red; exit 1 } }
 
-if (-not $SansGivre) {
-    Etape "Compilation de la barre Givre"
-    cargo build --release --manifest-path "$racine\givre\Cargo.toml"
-    Verifier "Givre ne compile pas"
+# La barre (jarvis\barre) est compilée dans son propre dossier (target-paquet) : pas de conflit avec la barre
+# qui tourne, et les options ci-dessus ne forcent pas à tout recompiler à chaque fois.
+$barre = "$jarvis\barre\target-paquet\release\JarvisBarre.exe"
+if (-not $SansBarre -or -not (Test-Path $barre)) {
+    Etape "Compilation de la barre de Jarvis"
+    if ($googleJson) { Write-Host "Connexion Google intégrée (depuis $googleJson)" }
+    else { Write-Host "(pas de google.json : la connexion Google ne sera pas dans cette barre)" -ForegroundColor Yellow }
+    cargo build --release --manifest-path "$jarvis\barre\Cargo.toml" --target-dir "$jarvis\barre\target-paquet"
+    Verifier "la barre ne compile pas"
 }
-$givre = "$racine\givre\target\release\givre.exe"
-if (-not (Test-Path $givre)) { Write-Host "givre.exe introuvable : compile Givre d'abord." -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $barre)) { Write-Host "JarvisBarre.exe introuvable : compile la barre d'abord." -ForegroundColor Red; exit 1 }
 
 Etape "Compilation de Jarvis.exe"
 cargo build --release --manifest-path "$jarvis\lanceur\Cargo.toml"
@@ -30,7 +41,9 @@ Etape "Rassemblement des fichiers à installer"
 $charge = Join-Path $dist "charge"
 Remove-Item $charge -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $charge | Out-Null
-Copy-Item "$jarvis\main.py", "$jarvis\config.toml", "$jarvis\requirements.txt", "$jarvis\LISEZMOI.md", "$jarvis\VERSION", $lanceur $charge
+Copy-Item "$jarvis\main.py", "$jarvis\requirements.txt", "$jarvis\LISEZMOI.md", "$jarvis\VERSION", $lanceur $charge
+# Réglages NEUTRES (config.defaut.toml), jamais ton config.toml : il contient tes contacts, ta ville…
+Copy-Item "$jarvis\config.defaut.toml" "$charge\config.toml"
 if (Test-Path "$jarvis\DEPOT") { Copy-Item "$jarvis\DEPOT" $charge }
 foreach ($dossier in "core", "modules") {
     New-Item -ItemType Directory "$charge\$dossier" | Out-Null
@@ -39,7 +52,7 @@ foreach ($dossier in "core", "modules") {
 New-Item -ItemType Directory "$charge\outils" | Out-Null
 Copy-Item "$jarvis\outils\telecharger_modeles.py" "$charge\outils"
 Copy-Item "$jarvis\extension-chrome" "$charge\extension-chrome" -Recurse
-Copy-Item $givre "$charge\Givre.exe"
+Copy-Item $barre "$charge\JarvisBarre.exe"
 $zip = Join-Path $dist "charge.zip"
 Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path "$charge\*" -DestinationPath $zip

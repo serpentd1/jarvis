@@ -2,8 +2,12 @@
 numpy
 sounddevice          # micro et haut-parleurs
 openwakeword         # mot d'activation « Hey Jarvis »
-onnxruntime          # moteur pour openWakeWord
-faster-whisper       # parole -> texte (GPU)
+onnxruntime==1.22.0  # dépendance Kokoro alignée sur la version CUDA 12 ci-dessous
+onnxruntime-gpu==1.22.0  # CUDA 12 pour Kokoro ; CPU reste disponible pour openWakeWord
+nvidia-cuda-runtime-cu12  # bibliothèques nécessaires au fournisseur CUDA d'ONNX Runtime
+nvidia-cufft-cu12
+onnx-asr             # parole -> texte avec Parakeet (par défaut)
+faster-whisper       # parole -> texte avec Whisper (si choisi dans config.toml)
 nvidia-cublas-cu12   # bibliothèques CUDA pour faster-whisper
 nvidia-cudnn-cu12==9.*
 piper-tts            # texte -> voix, en local (voix rapides)

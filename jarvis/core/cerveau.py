@@ -1,13 +1,19 @@
 """Le cerveau de Jarvis : un seul pour la voix ET le chat de l'île, avec une mémoire commune.
 
+DEPUIS LE PASSAGE EN RUST : le vrai cerveau est dans la barre (barre/src/cerveau.rs, POST :47802/cerveau).
+Ce fichier lui sert de « registre » (outils, raccourcis et données des modules Python, routes /cerveau/…
+de serveur.py) et garde l'ancien cerveau Python en SECOURS, si la barre ne répond pas.
+
 1. Raccourcis instantanés (« lance Discord », « pause », « minuteur 5 minutes »…) : pas besoin de l'IA.
 2. Sinon, l'IA locale (Ollama) choisit les outils à appeler ; Jarvis les exécute VRAIMENT,
    puis dit ce qui a été fait (jamais « je le fais » sans le faire).
 3. Les actions sensibles (envoyer un message, forcer la fermeture…) attendent ton « oui ».
 """
+import json
 import logging
 import re
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +35,10 @@ OUI = re.compile(r"^(oui|ouais|ouai|wesh|vas y|ok|okay|d'accord|daccord|envoie|e
 NON = re.compile(r"^(non|nan|nope|annule|laisse tomber|oublie|stop|pas maintenant|attends|surtout pas|n'envoie pas|"
                  r"non merci|pas du tout|arrete|change)\b")
 # L'IA dit avoir agi… sans avoir appelé d'outil : on ne la laisse pas mentir.
+# « Stop » pendant une conversation continue : on arrête de discuter (texte normalisé).
+STOP = re.compile(r"^(?:(?:hey |ok )?jarvis )?(?:stop|arrete(?: toi)?|tais toi|chut|c'est bon|c'est tout|ca suffit|"
+                  r"au revoir|bonne nuit|a plus(?: tard)?|fin de la conversation|on arrete|merci c'est tout)"
+                  r"(?: (?:jarvis|merci))*$")
 PRETEND_AGIR = re.compile(r"\b(j'ai (bien )?(envoye|lance|ouvert|ferme|mis|regle|active|desactive|coupe|change|cree|"
                           r"programme|supprime|annule|demarre|transmis)|c'est (bien )?(envoye|fait|lance|ouvert|regle|"
                           r"parti|programme)|message (bien )?envoye|je (l')?envoie|j'envoie|j'ouvre|je lance|je ferme|"
@@ -45,19 +55,39 @@ ACTION = re.compile(r"\b(lance|lancer|ouvr|ferm|quitt|mets|met|mettre|baiss|mont
                     r"jouer|passe a|suivant|precedent|reveill|alarme|minuteur|chrono|timer|annul|arret|stop|"
                     r"demarr|active|desactiv|allum|etein|verrouill|actualis|rafraich|lis|lire|volume|ecout|"
                     r"affich|montre|regle|dis a|dis lui|plus fort|moins fort|clique|clic|tape|appuie|presse|saisis|"
-                    r"defile|descend|remonte|scroll|regarde|ecran|analyse|decris|voix|installe)", re.IGNORECASE)
+                    r"defile|descend|remonte|scroll|regarde|ecran|analyse|decris|voix|installe|ajoute|rajoute|note (?:que|ca|le|la|les|dans|bien|moi)|prends note|"
+                    r"retiens|souviens|rappelle|coche|termine|j'ai fait|j'ai fini|cree|oublie|routine|habitude|"
+                    r"verrouille|batterie|supprim|efface|renomm|deplac|copie|modifi|corrige|fichier|dossier|"
+                    r"page web|site web|powershell|commande|redemarr|veille|tue|processus)", re.IGNORECASE)
 MOT_ACTIVATION = re.compile(r"^\s*(?:(?:hey|hé|he|eh|et|ok|okay|dis|bonjour|salut|yo)[\s,]*)?"
                             r"(?:jarvis|jarvi|jarvy|djarvis|charvis|jervis|jarvisse)\b[\s,.!?:;-]*", re.IGNORECASE)
+MOT_ACTIVATION_DANS_PHRASE = re.compile(
+    r"\b(?:h[eé]+y?|ok|eh)?[\s,]*d?j?arv[iy]s+\b[\s,.!?]*", re.IGNORECASE)
 
 
 @dataclass
 class Reponse:
     texte: str
     suivi: bool = False          # True : Jarvis a posé une question, il réécoute tout de suite
+    reste: str | None = None     # ce qu'il reste à dire après les phrases déjà données en direct (None = tout)
 
 
 def enlever_mot_activation(texte: str) -> str:
     return MOT_ACTIVATION.sub("", texte or "", count=1).strip()
+
+
+def commande_autour_du_mot(texte: str) -> str:
+    """Garde la commande prononcée autour du mot d'activation."""
+    texte = texte or ""
+    occurrences = list(MOT_ACTIVATION_DANS_PHRASE.finditer(texte))
+    if not occurrences:
+        return texte
+    derniere = occurrences[-1]
+    apres = texte[derniere.end():].strip(" \t\r\n,.;!?")
+    if apres:
+        return apres
+    avant = texte[:derniere.start()].strip(" \t\r\n,.;!?")
+    return avant or texte
 
 
 def consigne(nom: str) -> str:
@@ -70,9 +100,11 @@ def consigne(nom: str) -> str:
         "- Réponds en français, en TUTOYANT l'utilisateur, en une ou deux phrases courtes et naturelles : elles "
         "sont LUES À VOIX HAUTE. Pas de markdown, pas de listes, pas d'émojis.\n"
         "- Tu ne sais pas encore envoyer de message sur Pronote ni de mail : si on te le demande, dis-le.\n"
-        "- QUESTION (météo, devoirs, notes, cours, mails, minuteurs, Discord, culture générale…) : réponds "
-        "directement avec les DONNÉES ci-dessous, SANS appeler d'outil. Si l'information n'y est pas, dis-le "
-        "au lieu d'inventer. « Et demain ? » continue la question précédente.\n"
+        "- QUESTION sur la vie de l'utilisateur (météo, devoirs, notes, cours, mails, minuteurs, Discord, "
+        "téléphone…) : réponds directement avec les DONNÉES ci-dessous, SANS appeler d'outil. Si l'information "
+        "n'y est pas, dis-le au lieu d'inventer. « Et demain ? » continue la question précédente.\n"
+        "- DISCUSSION ou CULTURE GÉNÉRALE (blague, histoire, devinette, conseil, explication, question de cours…) : "
+        "réponds toi-même avec tes connaissances, volontiers et sans outil.\n"
         "- ACTION demandée clairement (ouvrir ou fermer une appli, un site, minuteur, alarme, chrono, vidéo, "
         "musique, volume, envoyer un message Discord, ouvrir Pronote ou un mail…) : appelle l'outil adapté. "
         "N'affirme JAMAIS avoir fait une action sans avoir appelé l'outil.\n"
@@ -86,11 +118,20 @@ class Cerveau:
         self.cfg, self.nom, self.reg = cfg, nom, registre
         self.historique = deque(maxlen=2 * int(cfg["historique"]))
         self.attente = None                       # (action si oui, phrase si non)
-        self.verrou = threading.Lock()
+        self.verrou = threading.RLock()           # une routine relance le cerveau depuis un de ses outils
+        self.coupe = None                         # ce que Jarvis disait quand on lui a coupé la parole
+        self._coupe = None
+        self._confirmations, self._n = {}, 0      # questions oui/non posées par un outil (pour le cerveau Rust)
+        self._barre_absente = 0.0                 # la barre ne répond pas : on n'insiste pas avant cette heure
 
     # ── public ───────────────────────────────────────────────
-    def repondre(self, texte: str, source: str = "voix") -> Reponse:
-        with self.verrou:
+    def repondre(self, texte: str, source: str = "voix", sur_phrase=None) -> Reponse:
+        """`sur_phrase(phrase)` reçoit les phrases dès qu'elles sont prêtes (Jarvis parle plus tôt) ;
+        ce qu'il reste à dire ensuite est dans `Reponse.reste`."""
+        rep = self._par_la_barre(texte, source, sur_phrase)
+        if rep is not None:
+            return rep
+        with self.verrou:                          # secours : l'ancien cerveau Python
             try:
                 return self._repondre(texte, source)
             except Exception:  # noqa: BLE001
@@ -101,6 +142,110 @@ class Cerveau:
         with self.verrou:
             self.historique.clear()
             self.attente = None
+        url = self._url_barre()
+        if url:
+            threading.Thread(target=_sans_erreur, args=(requests.post, f"{url}/cerveau/oublier"),
+                             kwargs={"json": {}, "timeout": 2}, daemon=True).start()
+
+    # ── le cerveau Rust (dans la barre) ──────────────────────
+    def _url_barre(self):
+        ctx = self.reg.ctx
+        if getattr(ctx, "simulation", False) or not hasattr(ctx, "cfg"):
+            return None                             # tests : tout reste en Python, rien n'est exécuté
+        return ctx.cfg["givre"]["url"].rstrip("/")
+
+    def _par_la_barre(self, texte: str, source: str, sur_phrase):
+        """Pose la question au cerveau Rust. None s'il ne répond pas (on prend alors le secours)."""
+        url = self._url_barre()
+        if not url or time.time() < self._barre_absente:
+            return None
+        coupe, self.coupe = self.coupe, None
+        corps = {"texte": texte, "source": source, "coupe": coupe or "",
+                 "reglages": {**self.cfg, "nom": self.nom}}
+        dites = []
+        try:
+            with requests.post(f"{url}/cerveau", json=corps, stream=True, timeout=(0.5, 400)) as r:
+                if r.status_code != 200:
+                    log.warning("le cerveau Rust a répondu %s : je prends le secours Python", r.status_code)
+                    self._barre_absente = time.time() + 60
+                    self.coupe = coupe
+                    return None
+                for ligne in r.iter_lines():
+                    if not ligne:
+                        continue
+                    d = json.loads(ligne.decode("utf-8"))
+                    if d.get("phrase"):
+                        dites.append(d["phrase"])
+                        if sur_phrase:
+                            sur_phrase(d["phrase"])
+                    if d.get("fin"):
+                        return Reponse(d.get("reponse", ""), bool(d.get("suivi")),
+                                       d.get("reste", "") if sur_phrase else None)
+        except requests.ConnectionError:
+            if not dites:
+                self._barre_absente = time.time() + 10
+                self.coupe = coupe
+                return None
+        except Exception:  # noqa: BLE001
+            log.exception("cerveau Rust")
+            if not dites:
+                self.coupe = coupe
+                return None
+        return Reponse(" ".join(dites), False, "" if sur_phrase else None)   # coupé en route : on garde ce qui est dit
+
+    # ── registre pour le cerveau Rust (routes /cerveau/… de serveur.py) ──
+    def avant(self, texte: str) -> dict:
+        """Ce qui passe avant l'IA : une révision en cours, « oublie tout », un raccourci instantané."""
+        n = normaliser(texte)
+        for intercepteur in self.reg.intercepteurs:
+            dire = intercepteur(texte, n)
+            if dire:
+                return {"dire": dire}
+        if OUBLI.match(n):
+            self.historique.clear()
+            return {"oubli": True}
+        if not PLUSIEURS_ORDRES.search(n):
+            for regle in self.reg.regles:
+                m = regle.motif.search(n)
+                if not m:
+                    continue
+                appels = regle.fonction(m, texte)
+                if appels:
+                    return {"appels": [[nom, args] for nom, args in appels]}
+        return {}
+
+    def _resultat(self, r) -> dict:
+        d = {"ok": bool(r.ok), "dire": r.dire, "annuler": r.annuler}
+        if r.confirmer:
+            self._n += 1
+            self._confirmations[self._n] = r.confirmer
+            for vieux in [k for k in self._confirmations if k <= self._n - 20]:
+                del self._confirmations[vieux]
+            d["confirmer"] = self._n
+        return d
+
+    def executer_outil(self, nom: str, args: dict) -> dict:
+        return self._resultat(self.reg.executer(nom, args if isinstance(args, dict) else {}))
+
+    def confirmer(self, id_: int) -> dict:
+        action = self._confirmations.pop(int(id_), None)
+        if not action:
+            return {"ok": False, "dire": "Il n'y a plus rien à confirmer."}
+        return self._resultat(action())
+
+    def apres_echange(self, question: str, reponse: str):
+        for f in self.reg.apres_echanges:
+            threading.Thread(target=_sans_erreur, args=(f, question, reponse), daemon=True).start()
+
+    def fin_conversation(self) -> str | None:
+        """« Stop » : la discussion est finie. Renvoie ce qu'il faut dire (ex. le bilan d'une révision)."""
+        dire = None
+        for f in self.reg.fins:
+            try:
+                dire = f() or dire
+            except Exception:  # noqa: BLE001
+                log.exception("fin de conversation")
+        return dire
 
     def prechauffer(self):
         """Charge le modèle en mémoire graphique en arrière-plan (sinon la 1re réponse prend ~20 s)."""
@@ -112,6 +257,7 @@ class Cerveau:
 
     # ── interne ──────────────────────────────────────────────
     def _repondre(self, texte: str, source: str) -> Reponse:
+        self._coupe, self.coupe = self.coupe, None     # ne sert qu'à la réponse qui suit la coupure
         texte = enlever_mot_activation(texte)
         n = normaliser(texte)
         if not n:
@@ -125,6 +271,11 @@ class Cerveau:
                 return self._fin(texte, r.dire)
             if NON.match(n):
                 return self._fin(texte, si_non)
+
+        for intercepteur in self.reg.intercepteurs:    # ex. : une révision de leçon en cours
+            dire = intercepteur(texte, n)
+            if dire:
+                return Reponse(dire)
 
         if OUBLI.match(n):
             self.historique.clear()
@@ -140,11 +291,12 @@ class Cerveau:
                 return self._executer(texte, appels, "")
         return self._ia(texte)
 
-    def _contexte(self) -> str:
+    def _contexte(self, question: str = "") -> str:
+        import inspect
         morceaux = []
         for f in self.reg.contextes:
             try:
-                t = f()
+                t = f(question) if inspect.signature(f).parameters else f()
                 if t:
                     morceaux.append(t)
             except Exception:  # noqa: BLE001
@@ -152,7 +304,12 @@ class Cerveau:
         return "\n\n".join(morceaux)
 
     def _ia(self, texte: str) -> Reponse:
-        messages = [{"role": "system", "content": consigne(self.nom) + "\n" + self._contexte()},
+        note = ""
+        if self._coupe:
+            note = ("\nTu viens d'être coupé par l'utilisateur pendant que tu disais : « " + self._coupe[:300] + " ». "
+                    "C'est normal dans une discussion : ne le prends pas mal et ne t'excuse pas longuement. Réponds "
+                    "simplement à ce qu'il vient de dire, et ne reprends ton explication que s'il te le demande.")
+        messages = [{"role": "system", "content": consigne(self.nom) + note + "\n" + self._contexte(texte)},
                     *self.historique, {"role": "user", "content": texte}]
         message = self._appel_ollama(messages, outils=bool(ACTION.search(normaliser(texte))))
         if message is None:
@@ -197,6 +354,8 @@ class Cerveau:
     def _fin(self, texte: str, reponse: str, suivi: bool = False) -> Reponse:
         self.historique.append({"role": "user", "content": texte})
         self.historique.append({"role": "assistant", "content": reponse})
+        for f in self.reg.apres_echanges:          # ex : la mémoire retient ce qui compte (en arrière-plan)
+            threading.Thread(target=_sans_erreur, args=(f, texte, reponse), daemon=True).start()
         return Reponse(reponse, suivi)
 
     def _appel_ollama(self, messages, outils: bool, max_mots: int = 300):
@@ -229,6 +388,13 @@ class Cerveau:
                 log.exception("Ollama")
                 return {"content": "J'ai eu un souci pour réfléchir à ça, désolé."}
         return None
+
+
+def _sans_erreur(fonction, *args, **kwargs):
+    try:
+        fonction(*args, **kwargs)
+    except Exception:  # noqa: BLE001
+        log.exception("après-échange en erreur")
 
 
 def nettoyer(texte: str) -> str:

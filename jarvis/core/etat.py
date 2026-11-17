@@ -13,6 +13,7 @@ class Etat:
         self.etat = "chargement"
         self.micro = True
         self.dernier_texte = ""
+        self.duree = 0.0                              # secondes que met Jarvis à dire le texte en cours
         self.ecouter_maintenant = threading.Event()   # bouton « parler » (île, icône)
         self.quitter = threading.Event()
         self.redemarrer = False
@@ -24,8 +25,9 @@ class Etat:
         """fonction(etat, texte, question, reponse) appelée à chaque changement."""
         self._abonnes.append(fonction)
 
-    def changer(self, etat: str, texte: str = "", question: str = "", reponse: str = ""):
-        self.etat = etat
+    def changer(self, etat: str, texte: str = "", question: str = "", reponse: str = "", duree: float = 0.0):
+        """`duree` : temps que met Jarvis à dire `texte` (l'île l'affiche alors mot par mot)."""
+        self.etat, self.duree = etat, duree
         if texte:
             self.dernier_texte = texte
         for f in self._abonnes:

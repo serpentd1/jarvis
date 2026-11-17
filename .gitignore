@@ -10,12 +10,17 @@
 
 # Secrets : jamais publiés
 google.json
+# Ce que Jarvis n'a pas su faire (tes vraies demandes : ça reste sur ce PC)
+jarvis/a-ajouter.txt
+# Tes réglages perso (contacts WhatsApp…) : on publie config.defaut.toml à la place
+jarvis/config.toml
 client_secret*.json
 *.ini
 
 # Fichiers fabriqués (recréés par les compilations et par l'installeur)
 target/
 target-test/
+target-paquet/
 dist/
 .venv/
 modeles/
