@@ -1008,6 +1008,7 @@ impl App {
                     h.done = !h.done;
                     let _ = self.pn_tx.send(PJob::Done(h.id.clone(), h.done));
                 }
+                self.accord_si_jour_fini(n as usize);
                 self.render_kind(Kind::Calendar);
             }
             Some(Action::OpenPronote) => {
@@ -1840,6 +1841,17 @@ impl App {
         if let Some(h) = self.data.pronote.homework.get_mut(i) {
             h.done = !h.done;
             let _ = self.pn_tx.send(PJob::Done(h.id.clone(), h.done));
+        }
+        self.accord_si_jour_fini(i);
+    }
+
+    /// Joue le petit accord si le devoir n° `i` vient d'être coché et que tous ceux du même jour sont faits.
+    fn accord_si_jour_fini(&self, i: usize) {
+        let hw = &self.data.pronote.homework;
+        if let Some(h) = hw.get(i) {
+            if h.done && pronote::jour_termine(hw, h.due) {
+                self.bruit(sys::Son::Accord);
+            }
         }
     }
 
@@ -3143,6 +3155,49 @@ impl App {
                 let id = self.clocks.add_timer(secs.round() as i64, &nom);
                 ok(&tx, json!({"ok": true, "id": id}));
                 self.ile_render();
+            }
+            api::ApiReq::TimerRename { nom } => {
+                let nom = nom.trim().to_string();
+                // le dernier minuteur lancé = celui qui a le plus grand numéro
+                match self.clocks.timers.iter_mut().max_by_key(|t| t.id) {
+                    _ if nom.is_empty() => ok(&tx, json!({"ok": false, "erreur": "Comment je l'appelle ?"})),
+                    Some(t) => {
+                        t.name = nom.clone();
+                        ok(&tx, json!({"ok": true, "dire": format!("C'est fait, ton minuteur s'appelle maintenant « {nom} ».")}));
+                        self.ile_render();
+                    }
+                    None => ok(&tx, json!({"ok": false, "erreur": "Je ne trouve aucun minuteur en cours. Une alarme n'a pas de nom que je peux changer."})),
+                }
+            }
+            api::ApiReq::DevoirsFaits { jour, matiere } => {
+                let today = Local::now().date_naive();
+                let jour = if jour.trim().is_empty() { "demain".to_string() } else { jour };
+                match pai::lire_date(&jour, today) {
+                    None => ok(&tx, json!({"ok": false, "erreur": "Quel jour ? Par exemple « demain » ou « lundi »."})),
+                    Some(d) => {
+                        let idx = pronote::devoirs_a_cocher(&self.data.pronote.homework, d, &matiere);
+                        let quand = if d == today { "aujourd'hui".to_string() } else { widgets::day_label(d, today) };
+                        if idx.is_empty() {
+                            let reste = self.data.pronote.homework.iter().any(|h| h.due == d);
+                            let msg = if reste { format!("Tous tes devoirs pour {quand} sont déjà cochés.") } else { format!("Je ne vois aucun devoir à faire pour {quand} dans Pronote.") };
+                            ok(&tx, json!({"ok": false, "erreur": msg}));
+                        } else {
+                            let mut noms = Vec::new();
+                            for &i in &idx {
+                                if let Some(h) = self.data.pronote.homework.get_mut(i) {
+                                    h.done = true;
+                                    let _ = self.pn_tx.send(PJob::Done(h.id.clone(), true));
+                                    noms.push(h.subject.to_lowercase());
+                                }
+                            }
+                            self.accord_si_jour_fini(idx[0]);
+                            let n = noms.len();
+                            let s = if n > 1 { "s" } else { "" };
+                            ok(&tx, json!({"ok": true, "dire": format!("C'est noté, {n} devoir{s} coché{s} pour {quand} : {}.", noms.join(", "))}));
+                            self.ile_render();
+                        }
+                    }
+                }
             }
             api::ApiReq::TimerCancel { id, tous } => {
                 let before = self.clocks.timers.len();

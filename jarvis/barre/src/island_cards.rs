@@ -97,6 +97,7 @@ pub fn glyph(t: Tab) -> char {
         Tab::JSettings => '\u{E713}',
         Tab::Accounts => '\u{E77B}',
         Tab::History => '\u{E81C}',
+        Tab::Today => '\u{E8BF}',
     }
 }
 
@@ -249,6 +250,14 @@ pub fn icon_drawn(c: &mut Ctx, t: Tab, cx: f32, cy: f32, col: Rgba) {
             c.ring(cx, cy, 7.5, col, lw);
             c.line(cx, cy, cx, cy - 4.5, lw, col);
             c.line(cx, cy, cx + 3.5, cy + 2.0, lw, col);
+        }
+        Tab::Today => {
+            // page de calendrier avec la case du jour remplie
+            c.rr_stroke(cx - 8.0, cy - 6.0, 16.0, 14.0, 2.5, col, lw);
+            c.line(cx - 8.0, cy - 2.0, cx + 8.0, cy - 2.0, lw, col);
+            c.line(cx - 4.0, cy - 8.5, cx - 4.0, cy - 4.5, lw, col);
+            c.line(cx + 4.0, cy - 8.5, cx + 4.0, cy - 4.5, lw, col);
+            c.rr(cx - 4.0, cy + 0.5, 5.0, 4.5, 1.0, col);
         }
         Tab::JSettings => {
             for i in 0..8 {

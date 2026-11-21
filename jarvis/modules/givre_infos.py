@@ -3,7 +3,7 @@ et les donne à l'IA comme contexte. Il peut aussi ouvrir Pronote, un mail, les 
 """
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
 
 from . import Resultat, masquer_codes, normaliser
 
@@ -193,6 +193,37 @@ def resume(e: dict) -> str:
     return "\n".join(L)
 
 
+def jour_vise(texte: str, aujourdhui: date | None = None) -> date:
+    """« demain », « lundi », « apres demain »… -> une date (demain si on ne comprend pas)."""
+    auj = aujourdhui or date.today()
+    t = normaliser(texte or "")
+    if "apres demain" in t or "apres-demain" in t:
+        return auj + timedelta(days=2)
+    if "aujourd" in t:
+        return auj
+    for i, nom in enumerate(JOURS):
+        if nom in t:
+            return auj + timedelta(days=(i - auj.weekday()) % 7 or 7)
+    return auj + timedelta(days=1)
+
+
+def sac_du_jour(pronote: dict, iso: str) -> tuple[list[str], list[dict]]:
+    """(matières des cours où l'élève VA, devoirs pour ce jour) pour la date iso. Les cours annulés, ceux où il
+    n'y va pas (PAI) et ses créneaux perso ne comptent pas."""
+    matieres = []
+    for j in pronote.get("semaine") or []:
+        if j.get("date") != iso:
+            continue
+        for c in j.get("cours") or []:
+            if c.get("annule") or c.get("n_y_va_pas") or c.get("perso"):
+                continue
+            m = str(c.get("matiere") or "").strip()
+            if m and m not in matieres:
+                matieres.append(m)
+    devoirs = [d for d in pronote.get("devoirs") or [] if d.get("pour") == iso and not d.get("fait")]
+    return matieres, devoirs
+
+
 def installer(ctx, reg):
     givre = ctx.givre
 
@@ -254,3 +285,36 @@ def installer(ctx, reg):
               lambda m, t: [("ouvrir_givre", {"quoi": "mails"})], priorite=30)
     reg.regle(r"^(?:ouvre|ouvrir|affiche|montre)(?: moi)? (?:mes devoirs|les devoirs|mon cahier de textes?)$",
               lambda m, t: [("ouvrir_givre", {"quoi": "devoirs"})], priorite=30)
+
+    def liste_du_sac(jour: str = "demain"):
+        e = givre.etat() or {}
+        p = e.get("pronote") or {}
+        if not e.get("ok"):
+            return Resultat("Ma barre n'est pas lancée, donc je ne vois pas ton emploi du temps.", ok=False)
+        if not p.get("connecte"):
+            return Resultat("Pronote n'est pas connecté, je ne peux pas voir tes cours pour préparer ton sac.", ok=False)
+        d = jour_vise(jour)
+        iso = d.isoformat()
+        if not any(j.get("date") == iso for j in p.get("semaine") or []):
+            return Resultat(f"Je n'ai pas ton emploi du temps pour {date_fr(iso)}.", ok=False)
+        matieres, devoirs = sac_du_jour(p, iso)
+        if not matieres:
+            return Resultat(f"Tu n'as pas cours {date_fr(iso)} : pas besoin de sac pour l'école.")
+        texte = (f"SAC POUR {date_fr(iso).upper()}. Cours où l'élève va, dans l'ordre : {', '.join(matieres)}. "
+                 + ("Devoirs pour ce jour : " + " ; ".join(f"{x.get('matiere')} : {str(x.get('texte', ''))[:150]}"
+                                                           for x in devoirs) + ". " if devoirs else "Aucun devoir pour ce jour. ")
+                 + "Fais une liste courte de ce qu'il doit mettre dans son sac (cahiers, livres, affaires spéciales "
+                   "comme la tenue de sport pour l'EPS, calculatrice, matériel de dessin…), en le tutoyant, en 2 à 4 phrases.")
+        return Resultat(f"Pour {date_fr(iso)}, tu as : {', '.join(matieres)}.", pour_ia=texte)
+
+    reg.outil("liste_du_sac", "Dit ce qu'il faut mettre dans le sac pour un jour (demain par défaut), d'après les cours "
+              "et les devoirs de Pronote.",
+              {"jour": "demain, après-demain, ou un jour de la semaine (lundi…)"}, [], liste_du_sac)
+    reg.regle(r"^(?:qu'est ce que |que |quoi )?(?:je dois|dois je|il faut que je|faut il|faut il que je) (?:mettre|prendre|"
+              r"emporter|avoir) (?:dans )?(?:mon|le) sac(?: pour| de)? ?(?P<j>demain|apres demain|aujourd'hui|lundi|mardi|"
+              r"mercredi|jeudi|vendredi|samedi|dimanche)?$"
+              r"|^(?:prepare|fais|donne)(?: moi)? (?:mon|le|ma liste du) sac(?: pour| de)? ?(?P<j2>demain|apres demain|"
+              r"aujourd'hui|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)?$"
+              r"|^(?:mon|le) sac (?:pour|de) (?P<j3>demain|apres demain|aujourd'hui|lundi|mardi|mercredi|jeudi|vendredi|"
+              r"samedi|dimanche)$",
+              lambda m, t: [("liste_du_sac", {"jour": m["j"] or m["j2"] or m["j3"] or "demain"})], priorite=25)

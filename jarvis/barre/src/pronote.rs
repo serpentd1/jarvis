@@ -1224,6 +1224,44 @@ impl Worker {
     }
 }
 
+/// Numéros des devoirs pas encore faits, à rendre ce jour-là (et de cette matière si elle est donnée).
+pub fn devoirs_a_cocher(devoirs: &[Homework], jour: NaiveDate, matiere: &str) -> Vec<usize> {
+    let m = crate::pai::simple(matiere);
+    devoirs
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.due == jour && !h.done && (m.is_empty() || crate::pai::simple(&h.subject).contains(&m)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Tous les devoirs de ce jour sont-ils faits ? (faux s'il n'y en a aucun)
+pub fn jour_termine(devoirs: &[Homework], jour: NaiveDate) -> bool {
+    let mut du_jour = devoirs.iter().filter(|h| h.due == jour).peekable();
+    du_jour.peek().is_some() && du_jour.all(|h| h.done)
+}
+
+#[cfg(test)]
+mod tests_devoirs {
+    use super::*;
+
+    fn hw(id: &str, matiere: &str, jour: u32, fait: bool) -> Homework {
+        Homework { id: id.into(), subject: matiere.into(), text: String::new(), due: NaiveDate::from_ymd_opt(2026, 11, jour).unwrap(), done: fait, color: [0; 3] }
+    }
+
+    #[test]
+    fn devoirs_du_jour() {
+        let v = vec![hw("a", "MATHÉMATIQUES", 23, false), hw("b", "FRANCAIS", 23, true), hw("c", "SVT", 24, false), hw("d", "FRANCAIS", 23, false)];
+        let j = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        assert_eq!(devoirs_a_cocher(&v, j, ""), vec![0, 3]);
+        assert_eq!(devoirs_a_cocher(&v, j, "maths"), Vec::<usize>::new());
+        assert_eq!(devoirs_a_cocher(&v, j, "mathématiques"), vec![0]);
+        assert!(!jour_termine(&v, j));
+        assert!(jour_termine(&v[1..2], j));
+        assert!(!jour_termine(&[], j));
+    }
+}
+
 // ---------- Copie dans Google Agenda (« Pronote (Givre) ») ----------
 
 fn google_push(vault: &Mutex<Secrets>, sc: &School) -> Result<usize, String> {

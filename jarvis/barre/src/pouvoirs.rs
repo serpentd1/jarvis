@@ -489,7 +489,7 @@ struct Outil {
 
 const CH: &str = "chemin : « bureau\\x.txt », « documents\\projet », « C:\\…\\x », ou juste un nom (dossier Documents\\Jarvis)";
 
-const OUTILS: [Outil; 39] = [
+const OUTILS: [Outil; 41] = [
     Outil { nom: "alarme_telephone", description: "Crée une alarme dans l'appli Horloge du TÉLÉPHONE (pas du PC).", params: &[("heure", "heure, ex. 07:30", true), ("nom", "nom de l'alarme", false)] },
     Outil { nom: "minuteur_telephone", description: "Lance un minuteur sur le TÉLÉPHONE (pas sur le PC).", params: &[("duree", "durée, ex. 5 minutes", true), ("nom", "nom du minuteur", false)] },
     Outil { nom: "sonner_telephone", description: "Fait sonner le TÉLÉPHONE à fond (même en silencieux), avec vibration et flash, pour le retrouver.", params: &[] },
@@ -505,6 +505,8 @@ const OUTILS: [Outil; 39] = [
     Outil { nom: "whatsapp_lire", description: "Lit WhatsApp sur le PC : les dernières discussions (sans contact, avec les non lus) ou les derniers messages d'une personne.", params: &[("a", "contact (vide = les dernières discussions)", false)] },
     Outil { nom: "whatsapp_envoyer", description: "Envoie un message WhatsApp depuis l'appli du PC. Toujours après confirmation (Jarvis relit le message).", params: &[("a", "nom du contact", true), ("texte", "le message à envoyer, mot pour mot", true)] },
     Outil { nom: "changer_modele", description: "Change le modèle d'IA de Jarvis : le plus fort (550B), le rapide qui voit les images (120B), le très rapide (30B), celui de ce PC (LM Studio, gratuit) ou auto.", params: &[("choix", "fort, rapide images, tres rapide, local ou auto", true)] },
+    Outil { nom: "devoirs_faits", description: "Coche comme faits les devoirs Pronote d'un jour (et d'une matière si donnée). Ex. « j'ai fini tous mes devoirs pour demain », « coche les devoirs de maths de lundi ».", params: &[("jour", "aujourd'hui, demain, lundi… ou JJ/MM ; demain par défaut", false), ("matiere", "matière ; vide = tous les devoirs du jour", false)] },
+    Outil { nom: "renommer_minuteur", description: "Renomme le dernier minuteur lancé sur le PC (une alarme n'a pas de nom). Ex. « renomme le minuteur en pâtes ».", params: &[("nom", "nouveau nom", true)] },
     Outil { nom: "cours_pai", description: "Emploi du temps aménagé (PAI) : note qu'il ne va pas à un cours, ou qu'il y va finalement. Ex. « je ne vais pas en maths demain », « finalement je vais en SVT lundi ».", params: &[("jour", "aujourd'hui, demain, lundi… ou JJ/MM", true), ("matiere", "matière du cours ; vide = tous les cours du jour", false), ("heure", "heure du cours, ex. 14:00, si besoin", false), ("y_va", "oui s'il y va finalement, non s'il n'y va pas", true)] },
     Outil { nom: "appeler_whatsapp_pc", description: "Lance un appel vocal WHATSAPP depuis l'appli WhatsApp du PC (quand l'utilisateur dit « avec WhatsApp », « sur WhatsApp », « depuis WhatsApp »). Toujours après confirmation.", params: &[("a", "nom du contact ou numéro", true)] },
     Outil { nom: "message_vers_telephone", description: "Affiche une notification sur le téléphone (un rappel, un texte à garder).", params: &[("texte", "texte à afficher", true)] },
@@ -954,6 +956,18 @@ pub fn appeler(nom_outil: &str, args: &Value) -> Sortie {
         "whatsapp_envoyer" => return envoyer_whatsapp_pc(&texte_de("a"), &texte_de("texte")),
         "changer_modele" => {
             return match crate::cerveau::a_la_barre(crate::api::ApiReq::IaModele { choix: texte_de("choix") }) {
+                Some(v) if v["ok"].as_bool() == Some(true) => Sortie::Fait(v["dire"].as_str().unwrap_or("C'est fait.").into()),
+                Some(v) => Sortie::Refus(v["erreur"].as_str().unwrap_or("Désolé, ça n'a pas marché.").into()),
+                None => Sortie::Refus("Désolé, ça n'a pas marché.".into()),
+            };
+        }
+        "devoirs_faits" | "renommer_minuteur" => {
+            let req = if nom_outil == "devoirs_faits" {
+                crate::api::ApiReq::DevoirsFaits { jour: texte_de("jour"), matiere: texte_de("matiere") }
+            } else {
+                crate::api::ApiReq::TimerRename { nom: texte_de("nom") }
+            };
+            return match crate::cerveau::a_la_barre(req) {
                 Some(v) if v["ok"].as_bool() == Some(true) => Sortie::Fait(v["dire"].as_str().unwrap_or("C'est fait.").into()),
                 Some(v) => Sortie::Refus(v["erreur"].as_str().unwrap_or("Désolé, ça n'a pas marché.").into()),
                 None => Sortie::Refus("Désolé, ça n'a pas marché.".into()),

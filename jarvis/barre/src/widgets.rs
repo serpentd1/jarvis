@@ -1033,7 +1033,7 @@ fn no_pronote(c: &mut Ctx, label: &str, h: f32) {
     c.hit(0.0, 0.0, W, h, Action::Accounts);
 }
 
-fn dur_txt(m: i64) -> String {
+pub(crate) fn dur_txt(m: i64) -> String {
     if m < 60 { format!("{m} min") } else { format!("{} h {:02}", m / 60, m % 60) }
 }
 

@@ -238,6 +238,8 @@ pub enum View {
     JSettings = 21,
     Accounts = 22,
     History = 23,
+    /// « Aujourd'hui » : cours, devoirs, météo, mails et minuteurs au même endroit.
+    Today = 24,
 }
 
 impl View {
@@ -266,6 +268,7 @@ impl View {
             21 => View::JSettings,
             22 => View::Accounts,
             23 => View::History,
+            24 => View::Today,
             _ => View::Main,
         }
     }
@@ -346,10 +349,11 @@ pub enum Tab {
     JSettings,
     Accounts,
     History,
+    Today,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 22] = [Tab::Home, Tab::Jarvis, Tab::Music, Tab::Discord, Tab::Timers, Tab::Dnd, Tab::Notifs, Tab::Clips, Tab::School, Tab::Calendar, Tab::Mails, Tab::Phone, Tab::Tasks, Tab::Reminders, Tab::Habits, Tab::Routines, Tab::Memory, Tab::Pc, Tab::Batteries, Tab::JSettings, Tab::Accounts, Tab::History];
+    pub const ALL: [Tab; 23] = [Tab::Home, Tab::Jarvis, Tab::Music, Tab::Discord, Tab::Timers, Tab::Dnd, Tab::Notifs, Tab::Clips, Tab::School, Tab::Calendar, Tab::Mails, Tab::Phone, Tab::Tasks, Tab::Reminders, Tab::Habits, Tab::Routines, Tab::Memory, Tab::Pc, Tab::Batteries, Tab::JSettings, Tab::Accounts, Tab::History, Tab::Today];
     pub fn view(self) -> View {
         match self {
             Tab::Home => View::Main,
@@ -374,6 +378,7 @@ impl Tab {
             Tab::JSettings => View::JSettings,
             Tab::Accounts => View::Accounts,
             Tab::History => View::History,
+            Tab::Today => View::Today,
         }
     }
     /// Onglet qui correspond à une page (les pages Devoirs / Notes vont avec « Pronote »).
@@ -401,6 +406,7 @@ impl Tab {
             View::JSettings => Tab::JSettings,
             View::Accounts => Tab::Accounts,
             View::History => Tab::History,
+            View::Today => Tab::Today,
         }
     }
     pub fn label(self) -> &'static str {
@@ -427,6 +433,7 @@ impl Tab {
             Tab::JSettings => "RÉGLAGES",
             Tab::Accounts => "COMPTES",
             Tab::History => "HISTORIQUE",
+            Tab::Today => "AUJOURD'HUI",
         }
     }
 }

@@ -87,6 +87,7 @@ pub fn section(name: &str) -> View {
         "comptes" => View::Accounts,
         "historique" | "conversations" => View::History,
         "jarvis" | "chat" => View::Chat,
+        "aujourdhui" | "aujourd'hui" | "today" => View::Today,
         _ => View::Main,
     }
 }

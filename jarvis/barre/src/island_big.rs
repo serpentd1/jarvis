@@ -1,6 +1,6 @@
 //! « Grande île » : l'île dépliée en grand panneau (barre de sections + contenu), et les pages des
-//! sections de Jarvis (tâches, rappels, habitudes, copiés, routines, mémoire, batteries, PC, paramètres),
-//! aussi utilisées comme onglets compacts dans l'île normale.
+//! sections de Jarvis (aujourd'hui, tâches, rappels, habitudes, copiés, routines, mémoire, batteries, PC,
+//! paramètres), aussi utilisées comme onglets compacts dans l'île normale.
 
 use chrono::{Datelike, Timelike};
 use serde_json::Value;
@@ -10,6 +10,7 @@ use crate::island::*;
 use crate::island_cards::{self, caps, icon, media_card, vgrad, weather_card};
 use crate::island_draw::*;
 use crate::jarvis_data::{arr, mem_reason, mem_rows, s, MEM_FILTERS, MEM_SORTS};
+use crate::pronote::{Lesson, School};
 use crate::widgets::{self, Action, Ctx, GREEN, ORANGE, RED};
 
 pub const BIG_W: f32 = 1100.0;
@@ -17,7 +18,8 @@ pub const BIG_H: f32 = 720.0;
 const SIDEBAR: f32 = 212.0;
 
 /// Sections de la grande île, dans l'ordre de la barre.
-pub const SECTIONS: [(View, Tab, &str); 19] = [
+pub const SECTIONS: [(View, Tab, &str); 20] = [
+    (View::Today, Tab::Today, "Aujourd'hui"),
     (View::Main, Tab::Home, "Accueil"),
     (View::Chat, Tab::Jarvis, "Jarvis"),
     (View::Tasks, Tab::Tasks, "Tâches"),
@@ -119,12 +121,12 @@ pub fn big_view(c: &mut Ctx, r: &R, w: f32, h: f32) {
     for (v, tab, name) in SECTIONS {
         let on = tab == cur;
         if on {
-            c.rr(12.0, y, SIDEBAR - 20.0, 32.0, 11.0, t.fg.a(0.13));
+            c.rr(12.0, y, SIDEBAR - 20.0, 30.0, 11.0, t.fg.a(0.13));
         }
-        icon(c, tab, 32.0, y + 16.0, if on { t.fg } else { t.fg2 });
-        c.text(Wt::Semibold, 13.0, 52.0, y + 21.0, if on { t.fg } else { t.fg2 }, name);
-        c.hit(12.0, y, SIDEBAR - 20.0, 32.0, Action::IleN(N_SECTION, v as u16));
-        y += 33.0;      // 19 sections : elles tiennent au-dessus du bouton « Fermer »
+        icon(c, tab, 32.0, y + 15.0, if on { t.fg } else { t.fg2 });
+        c.text(Wt::Semibold, 13.0, 52.0, y + 20.0, if on { t.fg } else { t.fg2 }, name);
+        c.hit(12.0, y, SIDEBAR - 20.0, 30.0, Action::IleN(N_SECTION, v as u16));
+        y += 31.0;      // 20 sections : elles tiennent au-dessus du bouton « Fermer »
     }
     if r.st.big_force {
         chip(c, 16.0, h - 36.0, "Fermer (Échap)", t.fg.a(0.12), t.fg2, Some(Action::Ile(A_BIG_CLOSE)));
@@ -151,6 +153,7 @@ pub fn big_view(c: &mut Ctx, r: &R, w: f32, h: f32) {
 /// Pages propres aux sections de Jarvis. `false` = page déjà existante (à dessiner par island_cards).
 pub fn section_page(c: &mut Ctx, r: &R, v: View, w: f32, h: f32) -> bool {
     match v {
+        View::Today => today_page(c, r, w, h),
         View::Tasks => tasks_page(c, r, w, h),
         View::Reminders => reminders_page(c, r, w, h),
         View::Habits => habits_page(c, r, w, h),
@@ -420,6 +423,406 @@ fn quand_txt(q: &str, now: chrono::NaiveDateTime) -> String {
 }
 
 // ---------- Tâches ----------
+
+// ---------- Aujourd'hui (tout au même endroit, frise du jour, « fin dans … ») ----------
+
+/// Cours où je vais vraiment (ni PAI, ni annulé, ni prof absent).
+fn j_y_vais(l: &Lesson) -> bool {
+    l.manque.is_empty() && !l.bad()
+}
+
+/// Première lettre en majuscule (« fin du cours… » → « Fin du cours… »).
+fn majuscule(s: &str) -> String {
+    let mut ch = s.chars();
+    match ch.next() {
+        Some(f) => f.to_uppercase().chain(ch).collect(),
+        None => String::new(),
+    }
+}
+
+/// Minutes entre deux instants, arrondies au-dessus (comme le compte à rebours du prochain cours).
+fn mins_entre(a: chrono::NaiveDateTime, b: chrono::NaiveDateTime) -> i64 {
+    ((b - a).num_seconds() + 59).max(0) / 60
+}
+
+/// Jour montré par la page, et prochain jour de cours (pour les devoirs « pour demain »).
+/// Le soir (après mon dernier cours) et les jours sans cours, on montre le prochain jour de cours.
+pub(crate) fn jours_page(p: &School, now: chrono::NaiveDateTime) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    let today = now.date();
+    let suivant = (1..=7).map(|k| today + chrono::Duration::days(k)).find(|d| p.lessons_on(*d).into_iter().any(j_y_vais));
+    let fin = p.lessons_on(today).into_iter().filter(|l| j_y_vais(l)).map(|l| l.end).max();
+    let montre = match (fin, suivant) {
+        (Some(f), _) if now < f => today,
+        (_, Some(d)) => d,
+        // vacances : rien dans la semaine, on reste sur aujourd'hui
+        _ => today,
+    };
+    (montre, suivant.unwrap_or(today + chrono::Duration::days(1)))
+}
+
+/// Heures de début et de fin de la frise : 8 h – 18 h, élargies si un cours déborde.
+pub(crate) fn frise_bornes(cours: &[&Lesson]) -> (u32, u32) {
+    let (mut a, mut b) = (8, 18);
+    for l in cours {
+        a = a.min(l.start.hour());
+        // un cours qui finit après minuit s'arrête au bout de la frise
+        let fin = if l.end.date() > l.start.date() { 24 } else { l.end.hour() + u32::from(l.end.minute() > 0) };
+        b = b.max(fin);
+    }
+    (a, b.min(24).max(a + 1))
+}
+
+/// Position (en x) d'une heure sur la frise qui va de `x` à `x + w` (collée aux bords si elle déborde).
+pub(crate) fn frise_x(t: chrono::NaiveTime, bornes: (u32, u32), x: f32, w: f32) -> f32 {
+    let m = t.num_seconds_from_midnight() as f32 / 60.0;
+    let (a, b) = (bornes.0 as f32 * 60.0, bornes.1 as f32 * 60.0);
+    x + w * ((m - a) / (b - a)).clamp(0.0, 1.0)
+}
+
+/// Textes sous la frise, seulement pendant les heures de cours : (« fin du cours dans 12 min »
+/// ou « pause : Maths dans 8 min », « fin de la journée dans 2 h 05 »). `None` avant le premier
+/// cours et après le dernier. Les cours annulés et ceux où je ne vais pas ne comptent pas.
+pub(crate) fn fins_txt(cours: &[&Lesson], now: chrono::NaiveDateTime) -> Option<(String, String)> {
+    let vrais: Vec<&Lesson> = cours.iter().copied().filter(|l| j_y_vais(l) && l.start.date() == now.date()).collect();
+    let debut = vrais.iter().map(|l| l.start).min()?;
+    let fin = vrais.iter().map(|l| l.end).max()?;
+    if now < debut || now >= fin {
+        return None;
+    }
+    let un = match vrais.iter().find(|l| l.start <= now && now < l.end) {
+        Some(l) => format!("fin du cours dans {}", widgets::dur_txt(mins_entre(now, l.end))),
+        None => {
+            let l = vrais.iter().filter(|l| l.start > now).min_by_key(|l| l.start)?;
+            format!("pause : {} dans {}", l.subject, widgets::dur_txt(mins_entre(now, l.start)))
+        }
+    };
+    Some((un, format!("fin de la journée dans {}", widgets::dur_txt(mins_entre(now, fin)))))
+}
+
+/// Frise de la journée : un bloc coloré par cours et le trait rouge « maintenant » (si c'est aujourd'hui).
+/// `zone` = (x, y, largeur, hauteur) de la barre.
+fn frise(c: &mut Ctx, cours: &[&Lesson], jour: chrono::NaiveDate, now: chrono::NaiveDateTime, zone: (f32, f32, f32, f32)) {
+    let t = c.t;
+    let (x, y, w, bh) = zone;
+    let bornes = frise_bornes(cours);
+    let pos = |d: chrono::NaiveDateTime| if d.date() > jour { x + w } else { frise_x(d.time(), bornes, x, w) };
+    c.rr(x, y, w, bh, 10.0, t.fg.a(0.05));
+    // un trait fin par heure, l'heure écrite dessous (une sur deux si c'est serré)
+    let n = bornes.1 - bornes.0;
+    let pas = if w / (n as f32) < 44.0 { 2 } else { 1 };
+    for hh in bornes.0..=bornes.1 {
+        let hx = x + w * (hh - bornes.0) as f32 / n as f32;
+        if hh > bornes.0 && hh < bornes.1 {
+            c.line(hx, y + 4.0, hx, y + bh - 4.0, 1.0, t.sep);
+        }
+        if (hh - bornes.0) % pas == 0 {
+            c.text_c(Wt::Regular, 10.5, hx, y + bh + 14.0, t.fg3, &format!("{hh} h"));
+        }
+    }
+    // d'abord les cours où je ne vais pas, puis les annulés, puis les vrais cours par-dessus
+    let mut v: Vec<&Lesson> = cours.to_vec();
+    v.sort_by_key(|l| if !l.manque.is_empty() { 0 } else if l.bad() { 1 } else { 2 });
+    let (by, hh) = (y + 3.0, bh - 6.0);
+    for l in v {
+        let x1 = pos(l.start) + 1.0;
+        let bw = (pos(l.end) - x1 - 1.0).max(3.0);
+        if !l.manque.is_empty() {
+            // emploi du temps aménagé : je n'y vais pas, juste un bloc gris très pâle
+            c.rr(x1, by, bw, hh, 7.0, t.fg.a(0.04));
+            continue;
+        }
+        let bad = l.bad();
+        let col = Rgba::from(l.color);
+        if bad {
+            c.rr(x1, by, bw, hh, 7.0, t.fg.a(0.06));
+            c.rr_stroke(x1, by, bw, hh, 7.0, RED.a(0.55), 1.0);
+        } else {
+            let dedans = jour == now.date() && l.start <= now && now < l.end;
+            c.rr(x1, by, bw, hh, 7.0, col.a(if dedans { 0.45 } else { 0.30 }));
+            c.rr(x1 + 3.0, by + 5.0, 3.0, hh - 10.0, 1.5, col);
+        }
+        if bw > 26.0 {
+            let ty = by + hh / 2.0 - 1.0;
+            let sub = c.fit(Wt::Semibold, 12.0, &l.subject, bw - 14.0);
+            let sw = c.text(Wt::Semibold, 12.0, x1 + 10.0, ty, if bad { t.fg3 } else { t.fg }, &sub);
+            if bad {
+                // annulé ou prof absent : barré
+                c.line(x1 + 10.0, ty - 4.5, x1 + 10.0 + sw, ty - 4.5, 1.3, RED);
+            }
+            if bw > 48.0 {
+                c.text(Wt::Regular, 10.5, x1 + 10.0, ty + 14.0, t.fg2, &l.start.format("%H:%M").to_string());
+            }
+        }
+    }
+    // trait « maintenant » : il avance à chaque nouvel affichage de l'île
+    if jour == now.date() {
+        let m = now.time().num_seconds_from_midnight() as f32 / 60.0;
+        if m >= bornes.0 as f32 * 60.0 && m <= bornes.1 as f32 * 60.0 {
+            let xn = frise_x(now.time(), bornes, x, w);
+            c.line(xn, y - 5.0, xn, y + bh + 3.0, 2.0, RED);
+            c.circle(xn, y - 5.0, 3.5, RED);
+        }
+    }
+}
+
+/// Page « Aujourd'hui » : la frise du jour en haut, puis les cours, les devoirs pour demain, la météo,
+/// les mails non lus et les minuteurs. Le soir, c'est le programme du prochain jour de cours.
+pub fn today_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
+    let t = c.t;
+    let p = &r.d.pronote;
+    let ecole = p.connected && r.cfg.pronote.on;
+    let now = r.now;
+    let today = now.date();
+    let (jour, suivant) = if ecole { jours_page(p, now) } else { (today, today + chrono::Duration::days(1)) };
+    let est_auj = jour == today;
+    let cours: Vec<&Lesson> = if ecole { p.lessons_on(jour) } else { Vec::new() };
+    let vrais: Vec<&Lesson> = cours.iter().copied().filter(|l| j_y_vais(l)).collect();
+    let big = h > 400.0;
+    let x0 = SIDE - 6.0;
+    let gw = w - 2.0 * x0;
+
+    // ---- carte du haut : titre, frise, « fin du cours dans … »
+    let fh = if big { 156.0 } else { 132.0 };
+    card(c, r, x0, 4.0, gw, fh);
+    let titre = if est_auj { "Aujourd'hui".to_string() } else { majuscule(&widgets::day_label(jour, today)) };
+    let ty = if big { 36.0 } else { 30.0 };
+    let tw = c.text(Wt::Semibold, if big { 20.0 } else { 16.0 }, x0 + 16.0, ty, t.fg, &titre);
+    let date = date_txt(r.c(), jour.and_hms_opt(12, 0, 0).unwrap_or(now));
+    c.text(Wt::Regular, 13.0, x0 + 26.0 + tw, ty, t.fg2, &date);
+    let resume = match (vrais.first(), vrais.iter().map(|l| l.end).max()) {
+        (Some(a), Some(b)) => format!("{} cours · {} – {}", vrais.len(), a.start.format("%H:%M"), b.format("%H:%M")),
+        _ if ecole => "Pas cours".to_string(),
+        _ => String::new(),
+    };
+    c.text_r(Wt::Semibold, 12.5, x0 + gw - 16.0, ty, t.fg2, &resume);
+    let (bx, bw) = (x0 + 16.0, gw - 32.0);
+    let (by, bh) = if big { (52.0, 46.0) } else { (44.0, 38.0) };
+    let ly = by + bh + if big { 42.0 } else { 36.0 };
+    if ecole {
+        frise(c, &cours, jour, now, (bx, by, bw, bh));
+        // sous la frise : « fin du cours dans 12 min · fin de la journée dans 2 h 05 » (pendant les cours)
+        if let Some((a, b)) = if est_auj { fins_txt(&cours, now) } else { None } {
+            let aw = c.text(Wt::Semibold, 15.0, bx, ly, t.accent, &majuscule(&a));
+            c.text(Wt::Regular, 14.0, bx + aw + 10.0, ly, t.fg2, &format!("·   {}", majuscule(&b)));
+        } else {
+            let dl = widgets::day_label(jour, today);
+            let msg = if !est_auj && !p.lessons_on(today).into_iter().any(j_y_vais) {
+                format!("Pas cours aujourd'hui : voici le programme de {dl}.")
+            } else if !est_auj {
+                format!("Les cours sont finis pour aujourd'hui : voici le programme de {dl}.")
+            } else if let Some(l) = vrais.iter().find(|l| l.start > now) {
+                format!("Premier cours dans {} ({}).", widgets::dur_txt(mins_entre(now, l.start)), l.subject)
+            } else {
+                String::new()
+            };
+            let msg = c.fit(Wt::Regular, 13.5, &msg, bw);
+            c.text(Wt::Regular, 13.5, bx, ly, t.fg2, &msg);
+        }
+    } else {
+        let txt = if r.cfg.pronote.on { "Pronote n'est pas connecté : clique ici pour le connecter (Comptes)." } else { "Pronote est désactivé (Comptes) : pas d'emploi du temps." };
+        c.text(Wt::Regular, 13.0, bx, by + 24.0, t.fg2, txt);
+        c.hit(x0, 4.0, gw, fh, Action::Accounts);
+    }
+
+    // devoirs pour le prochain jour de cours : non faits d'abord
+    let mut devoirs: Vec<usize> = if ecole { p.homework.iter().enumerate().filter(|(_, hw)| hw.due == suivant).map(|(i, _)| i).collect() } else { Vec::new() };
+    devoirs.sort_by_key(|i| p.homework[*i].done);
+    let reste = devoirs.iter().filter(|i| !p.homework[**i].done).count();
+    let pour = format!("Devoirs pour {}", widgets::day_label(suivant, today));
+    let nm = r.d.mail.mails.len();
+    let ni = important_mails(r.d, r.c()).len();
+    let y2 = 4.0 + fh + 10.0;
+
+    if !big {
+        // ---- île normale (petite) : trois petites cartes sous la frise
+        let ch = (h - y2 - 2.0).max(60.0);
+        let cw = (gw - 20.0) / 3.0;
+        let x = x0;
+        card(c, r, x, y2, cw, ch);
+        // titre court : « Devoirs pour mercredi » ne tiendrait pas dans la petite carte
+        caps(c, x + 14.0, y2 + 22.0, t.fg2, "Devoirs");
+        let nw = c.text(Wt::Semibold, 22.0, x + 14.0, y2 + 52.0, if reste > 0 { ORANGE } else { t.fg3 }, &reste.to_string());
+        let quand = c.fit(Wt::Regular, 12.5, &format!("pour {}", widgets::day_label(suivant, today)), cw - 34.0 - nw);
+        c.text(Wt::Regular, 12.5, x + 20.0 + nw, y2 + 52.0, t.fg2, &quand);
+        let txt = match devoirs.iter().find(|i| !p.homework[**i].done) {
+            Some(&i) => format!("{} · {}", p.homework[i].subject, p.homework[i].text.replace('\n', " ")),
+            None if ecole => "Rien à faire, profite !".to_string(),
+            None => "Pronote n'est pas connecté.".to_string(),
+        };
+        let txt = c.fit(Wt::Regular, 12.5, &txt, cw - 28.0);
+        c.text(Wt::Regular, 12.5, x + 14.0, y2 + 72.0, t.fg, &txt);
+        c.hit(x, y2, cw, ch, Action::IleN(N_SECTION, View::Homework as u16));
+        let x = x0 + cw + 10.0;
+        card(c, r, x, y2, cw, ch);
+        caps(c, x + 14.0, y2 + 22.0, t.fg2, "Météo");
+        if let Some(wt) = &r.d.weather {
+            c.icon(wt.code, wt.day, x + 10.0, y2 + 28.0, 34.0);
+            c.text(Wt::Light, 24.0, x + 50.0, y2 + 54.0, t.fg, &temp_txt(r.c(), wt.temp));
+            let ph = weather_phrase(r.c(), wt.code, wt.day, wt.temp, now.ordinal());
+            let ph = c.fit(Wt::Regular, 12.0, &ph, cw - 28.0);
+            c.text(Wt::Regular, 12.0, x + 14.0, y2 + 74.0, t.fg2, &ph);
+        } else {
+            c.text(Wt::Regular, 12.5, x + 14.0, y2 + 50.0, t.fg3, "Pas de météo.");
+        }
+        let x = x0 + 2.0 * (cw + 10.0);
+        card(c, r, x, y2, cw, ch);
+        caps(c, x + 14.0, y2 + 22.0, t.fg2, "Mails");
+        if r.cfg.mail.on {
+            let nw = c.text(Wt::Semibold, 22.0, x + 14.0, y2 + 52.0, if nm > 0 { t.fg } else { t.fg3 }, &nm.to_string());
+            c.text(Wt::Regular, 12.5, x + 20.0 + nw, y2 + 52.0, t.fg2, if nm > 1 { "non lus" } else { "non lu" });
+            if ni > 0 {
+                c.text(Wt::Semibold, 12.0, x + 14.0, y2 + 72.0, ORANGE, &format!("dont {ni} important{}", if ni > 1 { "s" } else { "" }));
+            }
+        } else {
+            c.text(Wt::Regular, 12.5, x + 14.0, y2 + 50.0, t.fg3, "Mails désactivés.");
+        }
+        c.hit(x, y2, cw, ch, Action::IleN(N_SECTION, View::Mails as u16));
+        return;
+    }
+
+    // ---- à gauche : les cours du jour (sans ceux où je ne vais pas ; les annulés barrés)
+    let bot = h - 4.0;
+    let lw = (gw * 0.55).round();
+    card(c, r, x0, y2, lw, bot - y2);
+    let titre = if est_auj { "Cours d'aujourd'hui".to_string() } else { format!("Cours de {}", widgets::day_label(jour, today)) };
+    caps(c, x0 + 14.0, y2 + 24.0, t.fg2, &titre);
+    let liste: Vec<&Lesson> = cours.iter().copied().filter(|l| l.manque.is_empty()).collect();
+    let mut y = y2 + 38.0;
+    if !ecole {
+        c.text(Wt::Regular, 12.5, x0 + 14.0, y + 14.0, t.fg3, "Pronote n'est pas connecté.");
+    } else if liste.is_empty() {
+        c.text(Wt::Regular, 12.5, x0 + 14.0, y + 14.0, t.fg3, "Pas cours ce jour-là.");
+    }
+    let (x, rw) = (x0 + 10.0, lw - 20.0);
+    for (k, l) in liste.iter().enumerate() {
+        if y + 42.0 > bot - 6.0 {
+            let n = liste.len() - k;
+            c.text(Wt::Regular, 12.0, x + 6.0, y + 12.0, t.fg3, &format!("+ {n} autre{} cours", if n > 1 { "s" } else { "" }));
+            break;
+        }
+        let dedans = est_auj && l.start <= now && now < l.end;
+        let passe = est_auj && l.end <= now;
+        let bad = l.bad();
+        c.rr(x, y, rw, 42.0, 11.0, if dedans { t.accent.a(0.18) } else { t.fg.a(0.05) });
+        c.rr(x + 8.0, y + 9.0, 3.5, 24.0, 1.75, if bad { t.fg3 } else { Rgba::from(l.color) });
+        let fg = if bad || passe { t.fg3 } else { t.fg };
+        c.text(Wt::Semibold, 13.0, x + 20.0, y + 18.0, fg, &l.start.format("%H:%M").to_string());
+        c.text(Wt::Regular, 11.5, x + 20.0, y + 34.0, t.fg3, &l.end.format("%H:%M").to_string());
+        // à droite : annulé, prof absent, changement de salle…
+        let lab = c.fit(Wt::Semibold, 10.5, &l.alert_label(), 170.0);
+        let labw = if lab.is_empty() { 0.0 } else { c.text_r(Wt::Semibold, 10.5, x + rw - 12.0, y + 18.0, if bad { RED } else { ORANGE }, &lab) + 10.0 };
+        let sub = c.fit(Wt::Semibold, 14.0, &l.subject, rw - 84.0 - labw);
+        let sw = c.text(Wt::Semibold, 14.0, x + 72.0, y + 18.0, fg, &sub);
+        if bad {
+            c.line(x + 72.0, y + 13.0, x + 72.0 + sw, y + 13.0, 1.4, RED);
+        }
+        let mut info = Vec::new();
+        if !l.room.is_empty() {
+            info.push(widgets::room_txt(&l.room));
+        }
+        if !l.teacher.is_empty() {
+            info.push(l.teacher.clone());
+        }
+        if l.perso {
+            info.push("créneau perso".to_string());
+        }
+        if dedans {
+            info.push(widgets::countdown_txt(l, now));
+        }
+        let info = c.fit(Wt::Regular, 12.0, &info.join("  ·  "), rw - 84.0);
+        c.text(Wt::Regular, 12.0, x + 72.0, y + 34.0, t.fg2, &info);
+        y += 46.0;
+    }
+
+    // ---- à droite : devoirs, puis météo + mails, puis minuteurs
+    let rx = x0 + lw + 10.0;
+    let rw = gw - lw - 10.0;
+    let total = bot - y2;
+    let dh = (total * 0.42).round();
+    let mh = 104.0;
+    let th = (total - dh - mh - 20.0).max(60.0);
+    card(c, r, rx, y2, rw, dh);
+    caps(c, rx + 14.0, y2 + 24.0, t.fg2, &pour);
+    if reste > 0 {
+        c.text_r(Wt::Semibold, 12.0, rx + rw - 14.0, y2 + 24.0, ORANGE, &format!("{reste} à faire"));
+    }
+    let mut y = y2 + 38.0;
+    if devoirs.is_empty() {
+        c.text(Wt::Regular, 12.5, rx + 14.0, y + 14.0, t.fg3, if ecole { "Rien pour ce jour-là, profite !" } else { "Pronote n'est pas connecté." });
+    }
+    let rows = ((dh - 46.0) / 28.0).floor().max(0.0) as usize;
+    let n = devoirs.len();
+    let vus = if n > rows { rows.saturating_sub(1) } else { n };
+    for &i in devoirs.iter().take(vus) {
+        let hw = &p.homework[i];
+        checkbox(c, rx + 24.0, y + 10.0, hw.done);
+        let col = if hw.done { t.fg3 } else { t.fg };
+        let sub = c.fit(Wt::Semibold, 13.0, &hw.subject, (rw - 54.0) * 0.45);
+        let sw = c.text(Wt::Semibold, 13.0, rx + 40.0, y + 14.5, col, &sub);
+        let txt = c.fit(Wt::Regular, 13.0, &hw.text.replace('\n', " "), rw - 62.0 - sw);
+        c.text(Wt::Regular, 13.0, rx + 48.0 + sw, y + 14.5, if hw.done { t.fg3 } else { t.fg2 }, &txt);
+        c.hit(rx + 6.0, y - 3.0, rw - 12.0, 26.0, Action::IleN(N_HW, i as u16));
+        y += 28.0;
+    }
+    if vus < n {
+        c.text(Wt::Regular, 12.0, rx + 40.0, y + 14.0, t.fg3, &format!("+ {} autre{}", n - vus, if n - vus > 1 { "s" } else { "" }));
+    }
+    // météo du moment
+    let y3 = y2 + dh + 10.0;
+    let hw2 = (rw - 10.0) / 2.0;
+    card(c, r, rx, y3, hw2, mh);
+    caps(c, rx + 14.0, y3 + 24.0, t.fg2, "Météo");
+    if let Some(wt) = &r.d.weather {
+        c.icon(wt.code, wt.day, rx + 10.0, y3 + 32.0, 40.0);
+        c.text(Wt::Light, 28.0, rx + 58.0, y3 + 64.0, t.fg, &temp_txt(r.c(), wt.temp));
+        let ph = weather_phrase(r.c(), wt.code, wt.day, wt.temp, now.ordinal());
+        let ph = c.fit(Wt::Regular, 12.0, &ph, hw2 - 28.0);
+        c.text(Wt::Regular, 12.0, rx + 14.0, y3 + 92.0, t.fg2, &ph);
+    } else {
+        c.text(Wt::Regular, 12.5, rx + 14.0, y3 + 54.0, t.fg3, "Pas de météo pour l'instant.");
+    }
+    // mails non lus
+    let mx = rx + hw2 + 10.0;
+    card(c, r, mx, y3, hw2, mh);
+    caps(c, mx + 14.0, y3 + 24.0, t.fg2, "Mails");
+    if r.cfg.mail.on {
+        let nw = c.text(Wt::Semibold, 30.0, mx + 14.0, y3 + 66.0, if nm > 0 { t.fg } else { t.fg3 }, &nm.to_string());
+        c.text(Wt::Regular, 13.0, mx + 22.0 + nw, y3 + 66.0, t.fg2, if nm > 1 { "non lus" } else { "non lu" });
+        if ni > 0 {
+            c.text(Wt::Semibold, 12.0, mx + 14.0, y3 + 90.0, ORANGE, &format!("dont {ni} important{}", if ni > 1 { "s" } else { "" }));
+        }
+    } else {
+        c.text(Wt::Regular, 12.5, mx + 14.0, y3 + 54.0, t.fg3, "Mails désactivés.");
+    }
+    c.hit(mx, y3, hw2, mh, Action::IleN(N_SECTION, View::Mails as u16));
+    // minuteurs en cours (lecture seule : un clic sur le titre ouvre la section Minuteurs)
+    let y4 = y3 + mh + 10.0;
+    card(c, r, rx, y4, rw, th);
+    caps(c, rx + 14.0, y4 + 24.0, t.fg2, "Minuteurs");
+    c.hit(rx, y4, rw, 30.0, Action::IleN(N_SECTION, View::Timers as u16));
+    let mut y = y4 + 40.0;
+    if r.clocks.chrono_since.is_some() {
+        c.text(Wt::Regular, 12.5, rx + 14.0, y + 13.0, t.fg2, "Chronomètre");
+        c.text_r(Wt::Semibold, 15.0, rx + rw - 14.0, y + 14.0, GREEN, &fmt_dur(r.clocks.chrono().as_secs_f64().floor()));
+        y += 30.0;
+    }
+    let rows = ((y4 + th - 8.0 - y) / 30.0).floor().max(0.0) as usize;
+    for tm in r.clocks.timers.iter().rev().take(rows) {
+        let run = tm.end.is_some();
+        let rem = tm.remaining();
+        let name = c.fit(Wt::Regular, 12.5, &tm.name, rw - 150.0);
+        c.text(Wt::Regular, 12.5, rx + 14.0, y + 13.0, t.fg2, &name);
+        let lab = if run { fmt_dur(rem) } else { format!("{} (pause)", fmt_dur(rem)) };
+        c.text_r(Wt::Semibold, 15.0, rx + rw - 14.0, y + 14.0, if run { ORANGE } else { t.fg3 }, &lab);
+        let f = if tm.total > 0 { (rem / tm.total as f64) as f32 } else { 0.0 };
+        c.rr(rx + 14.0, y + 20.0, rw - 28.0, 3.0, 1.5, t.track);
+        c.rr(rx + 14.0, y + 20.0, ((rw - 28.0) * f.clamp(0.0, 1.0)).max(3.0), 3.0, 1.5, ORANGE);
+        y += 30.0;
+    }
+    if r.clocks.timers.is_empty() && r.clocks.chrono_since.is_none() {
+        c.text(Wt::Regular, 12.5, rx + 14.0, y + 13.0, t.fg3, "Aucun minuteur en cours.");
+    }
+}
 
 pub fn tasks_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
     if absent(c, r, "taches") {
@@ -1367,5 +1770,69 @@ pub fn accounts_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
     c.text(Wt::Regular, 12.0, x2 + 32.0, y3, t.fg2, &ai);
     if y3 + 40.0 < dy + dh {
         chip(c, x2 + 14.0, dy + dh - 34.0, "Réglages avancés…", t.fg.a(0.12), t.fg2, Some(Action::Ile(A_SETTINGS_ACC)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+
+    fn jour(j: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, j).unwrap()
+    }
+    fn a(j: u32, h: u32, m: u32) -> NaiveDateTime {
+        jour(j).and_hms_opt(h, m, 0).unwrap()
+    }
+    fn cours(j: u32, debut: (u32, u32), fin: (u32, u32), matiere: &str) -> Lesson {
+        Lesson { start: a(j, debut.0, debut.1), end: a(j, fin.0, fin.1), subject: matiere.into(), ..Default::default() }
+    }
+    fn heure(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn frise_de_8_h_a_18_h_et_positions() {
+        let maths = cours(23, (8, 30), (9, 25), "Maths");
+        let eps = cours(23, (15, 30), (17, 25), "EPS");
+        assert_eq!(frise_bornes(&[&maths, &eps]), (8, 18));
+        assert_eq!(frise_bornes(&[]), (8, 18));
+        // une sortie qui déborde élargit la frise
+        let sortie = cours(23, (7, 45), (18, 30), "Sortie");
+        assert_eq!(frise_bornes(&[&sortie]), (7, 19));
+        // 13 h est au milieu de 8 h – 18 h
+        assert!((frise_x(heure(13, 0), (8, 18), 100.0, 1000.0) - 600.0).abs() < 0.01);
+        assert!((frise_x(heure(8, 30), (8, 18), 0.0, 600.0) - 30.0).abs() < 0.01);
+        // avant et après : collé aux bords
+        assert_eq!(frise_x(heure(6, 0), (8, 18), 100.0, 1000.0), 100.0);
+        assert_eq!(frise_x(heure(20, 0), (8, 18), 100.0, 1000.0), 1100.0);
+    }
+
+    #[test]
+    fn fin_du_cours_et_fin_de_la_journee() {
+        let maths = cours(23, (8, 30), (9, 25), "Maths");
+        let fr = cours(23, (9, 35), (10, 30), "Français");
+        let mut anglais = cours(23, (10, 30), (11, 25), "Anglais");
+        anglais.canceled = true;
+        let mut latin = cours(23, (11, 30), (12, 25), "Latin");
+        latin.manque = "emploi du temps aménagé".into();
+        let l = [&maths, &fr, &anglais, &latin];
+        let txt = |s: &str, t: &str| Some((s.to_string(), t.to_string()));
+        assert_eq!(fins_txt(&l, a(23, 9, 13)), txt("fin du cours dans 12 min", "fin de la journée dans 1 h 17"));
+        assert_eq!(fins_txt(&l, a(23, 9, 27)), txt("pause : Français dans 8 min", "fin de la journée dans 1 h 03"));
+        // avant le premier cours, et après le dernier (l'annulé et le cours où je ne vais pas ne comptent pas)
+        assert_eq!(fins_txt(&l, a(23, 8, 0)), None);
+        assert_eq!(fins_txt(&l, a(23, 10, 45)), None);
+    }
+
+    #[test]
+    fn le_soir_on_montre_le_prochain_jour_de_cours() {
+        let p = School { lessons: vec![cours(23, (8, 30), (16, 30), "Maths"), cours(24, (9, 0), (12, 0), "Français")], ..Default::default() };
+        // lundi 23 en journée : aujourd'hui, devoirs pour mardi 24
+        assert_eq!(jours_page(&p, a(23, 10, 0)), (jour(23), jour(24)));
+        // lundi soir : le programme de mardi
+        assert_eq!(jours_page(&p, a(23, 17, 0)), (jour(24), jour(24)));
+        // samedi 21 (pas cours) : le programme de lundi
+        assert_eq!(jours_page(&p, a(21, 10, 0)), (jour(23), jour(23)));
     }
 }

@@ -41,6 +41,10 @@ pub enum ApiReq {
     WeatherRefresh,
     /// PAI : « je ne vais pas en maths demain » (sauter) ou « finalement j'y vais ».
     Pai { jour: String, matiere: String, heure: String, sauter: bool },
+    /// « J'ai fini mes devoirs pour demain » : coche les devoirs Pronote de ce jour (et de cette matière).
+    DevoirsFaits { jour: String, matiere: String },
+    /// « Renomme le minuteur en pâtes » : renomme le dernier minuteur lancé.
+    TimerRename { nom: String },
     /// « Passe sur le plus rapide » : change le modèle de l'IA (voir profils::mode_depuis).
     IaModele { choix: String },
     /// Ne pas déranger de l'île (mode concentration de Jarvis) : `on` = None renvoie juste l'état.
@@ -244,6 +248,8 @@ fn handle(s: TcpStream, out: &Out) {
         ("POST", "/ouvrir") => ApiReq::Open { quoi: txt("quoi").to_lowercase(), n: j["n"].as_u64().unwrap_or(0) as usize, section: txt("section") },
         ("POST", "/meteo/actualiser") => ApiReq::WeatherRefresh,
         ("POST", "/ia/modele") => ApiReq::IaModele { choix: txt("choix") },
+        ("POST", "/pronote/devoirs-faits") => ApiReq::DevoirsFaits { jour: txt("jour"), matiere: txt("matiere") },
+        ("POST", "/minuteur/renommer") => ApiReq::TimerRename { nom: txt("nom") },
         ("POST", "/pronote/pai") => ApiReq::Pai { jour: txt("jour"), matiere: txt("matiere"), heure: txt("heure"), sauter: j["y_va"].as_bool() != Some(true) },
         ("POST", "/ne-pas-deranger") => ApiReq::Dnd { on: j["actif"].as_bool() },
         ("POST", "/notif") => ApiReq::Notif { titre: txt("titre"), texte: txt("texte"), source: txt("source") },

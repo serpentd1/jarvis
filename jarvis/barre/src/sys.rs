@@ -643,6 +643,8 @@ pub enum Son {
     Erreur,
     /// Idée 10 : la fin d'un minuteur, un carillon qui monte doucement.
     Carillon,
+    /// Idée 5 : un petit accord de 3 notes quand tous les devoirs d'un jour sont faits.
+    Accord,
 }
 
 fn hasard() -> f32 {
@@ -725,6 +727,7 @@ pub fn son(s: Son, volume: f32) {
         Son::Replie => vec![(784.0, 392.0, 0.12)],
         Son::Coche => vec![(2637.0, 2637.0, 0.14)],
         Son::Erreur => vec![(330.0, 330.0, 0.09), (262.0, 262.0, 0.15)],
+        Son::Accord => vec![(1047.0, 1047.0, 0.09), (1319.0, 1319.0, 0.09), (1568.0, 1568.0, 0.16)],
         Son::Carillon => vec![(523.0, 523.0, 0.16), (659.0, 659.0, 0.16), (784.0, 784.0, 0.16), (1047.0, 1047.0, 0.32)],
     };
     let wav = en_wav(&verre(&notes, v, s == Son::Onglet));

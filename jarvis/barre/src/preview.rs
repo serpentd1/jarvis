@@ -368,7 +368,7 @@ pub fn run_ile(out: &str) {
     // grande île : plusieurs sections
     let mut big = cfg.clone();
     big.ile.grande = 1;
-    for (name, v) in [("accueil", View::Main), ("taches", View::Tasks), ("rappels", View::Reminders), ("habitudes", View::Habits), ("memoire", View::Memory),
+    for (name, v) in [("aujourdhui", View::Today), ("accueil", View::Main), ("taches", View::Tasks), ("rappels", View::Reminders), ("habitudes", View::Habits), ("memoire", View::Memory),
         ("pc", View::Pc), ("parametres", View::JSettings), ("routines", View::Routines), ("batteries", View::Batteries), ("copies", View::Clips), ("telephone", View::Phone), ("mails", View::Mails), ("pronote", View::School), ("minuteurs", View::Timers), ("discord", View::Discord)] {
         shot(&d, &format!("40_grande_{name}"), &big, &mk(true, v), None, &jarvis_idle, &mut log);
     }

@@ -99,6 +99,25 @@ def nettoyer(demande: str) -> str:
     return " ".join(mots)
 
 
+def nom_navigateur(prog_id: str) -> str:
+    """ProgId de Windows (ChromeHTML, MSEdgeHTM…) -> nom lisible du navigateur."""
+    p = (prog_id or "").strip()
+    bas = p.lower()
+    for debut, nom in (("chromehtml", "Google Chrome"), ("msedgehtm", "Microsoft Edge"), ("firefox", "Firefox"),
+                       ("bravehtml", "Brave"), ("opera", "Opera"), ("vivaldi", "Vivaldi")):
+        if bas.startswith(debut):
+            return nom
+    return p
+
+
+def lire_navigateur_par_defaut() -> str:
+    """Le ProgId du navigateur par défaut (registre de l'utilisateur), ou chaîne vide."""
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations"
+                        r"\UrlAssociations\https\UserChoice") as cle:
+        return str(winreg.QueryValueEx(cle, "ProgId")[0])
+
+
 def installer(ctx, reg):
     index = Index(ctx.cfg["applis"])
     ctx.index_applis = index
@@ -169,6 +188,22 @@ def installer(ctx, reg):
               r"(?:lance|lancer|ouvre|ouvrir|demarre|demarrer|allume|allumer)(?: moi)? (?P<nom>.+)$",
               regle_lancer, priorite=80)
     reg.regle(r"^(?:tu peux |peux tu )?(?:ferme|fermer|quitte|quitter)(?: moi)? (?P<nom>.+)$", regle_fermer, 80)
+
+    def navigateur_par_defaut():
+        try:
+            prog = lire_navigateur_par_defaut()
+        except (OSError, ImportError):
+            return Resultat("Je n'arrive pas à voir quel est ton navigateur par défaut.", ok=False)
+        nom = nom_navigateur(prog)
+        return Resultat(f"Ton navigateur par défaut est {nom}." if nom else "Je ne vois pas de navigateur par défaut.",
+                        pour_ia=f"Navigateur par défaut de Windows : {nom} (ProgId {prog})")
+
+    reg.outil("navigateur_par_defaut", "Dit quel est le navigateur Internet par défaut de Windows.", {}, [],
+              navigateur_par_defaut)
+    reg.regle(r"^(?:quel est|c'est quoi|quel)(?: est)? (?:mon |le )?(?:navigateur|browser)(?: internet| web)?(?: par defaut)?"
+              r"(?: sur mon (?:pc|ordi|ordinateur))?$"
+              r"|^(?:quel|c'est quoi mon) navigateur (?:j'ai|j'utilise|utilise tu|est utilise) ?(?:par defaut)?$",
+              lambda m, t: [("navigateur_par_defaut", {})], priorite=40)
 
 
 def trouver_processus(cible: str, appid: str = ""):

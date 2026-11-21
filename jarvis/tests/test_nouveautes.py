@@ -170,3 +170,70 @@ def test_applis_ne_volent_pas_les_sites():
     """« Lance YouTube sur Chrome » ne doit pas juste ouvrir Chrome."""
     reg = registre(applis, web)
     assert raccourci(reg, "Lance YouTube sur Chrome") == [("ouvrir_site", {"site": "youtube"})]
+
+
+# ── PowerPoint, sac, navigateur par défaut ──
+def test_construire_pptx(tmp_path):
+    from modules.fichiers import construire_pptx, nettoyer_plan
+    from pptx import Presentation
+    plan = nettoyer_plan({"titre": "Les volcans", "diapos": [
+        {"titre": "Définition", "points": ["Une montagne qui crache", "Du magma", ""]},
+        {"titre": "Types", "points": ["Effusif", "Explosif", "Éteint"]}]}, "volcans")
+    f = construire_pptx(plan, tmp_path / "test.pptx")
+    prez = Presentation(str(f))
+    assert len(prez.slides) == 3                      # titre + 2 parties
+    assert prez.slide_width > prez.slide_height * 1.7  # 16:9
+    assert len(plan["diapos"][0]["points"]) == 2      # le point vide est retiré
+
+
+def test_raccourci_powerpoint():
+    reg = registre(fichiers)
+    a = raccourci(reg, "Crée-moi un PowerPoint sur les volcans")
+    assert a == [("creer_powerpoint", {"sujet": "les volcans"})]
+    a = raccourci(reg, "fais un diaporama sur la Révolution française (8 diapos)")
+    assert a[0][1]["sujet"] == "la revolution francaise" and a[0][1]["diapos"] == 8
+
+
+ETAT_SAC = {"ok": True, "pronote": {"connecte": True, "semaine": [
+    {"date": "2026-11-23", "jour": "lundi", "cours": [
+        {"debut": "08:00", "fin": "09:00", "matiere": "EPS"},
+        {"debut": "09:00", "fin": "10:00", "matiere": "MATHS", "annule": True},
+        {"debut": "10:00", "fin": "11:00", "matiere": "LATIN", "n_y_va_pas": "PAI"},
+        {"debut": "11:00", "fin": "12:00", "matiere": "FRANCAIS"}]}],
+    "devoirs": [{"matiere": "FRANCAIS", "pour": "2026-11-23", "texte": "Lire le chapitre 3", "fait": False},
+                {"matiere": "EPS", "pour": "2026-11-23", "texte": "déjà fait", "fait": True}]}}
+
+
+def test_sac_du_jour():
+    from modules.givre_infos import sac_du_jour
+    matieres, devoirs = sac_du_jour(ETAT_SAC["pronote"], "2026-11-23")
+    assert matieres == ["EPS", "FRANCAIS"]
+    assert [d["texte"] for d in devoirs] == ["Lire le chapitre 3"]
+
+
+def test_outil_liste_du_sac():
+    from modules import givre_infos
+    reg = registre(givre_infos, etat=ETAT_SAC)
+    a = raccourci(reg, "Qu'est-ce que je dois mettre dans mon sac lundi ?")
+    assert a == [("liste_du_sac", {"jour": "lundi"})]
+    assert raccourci(reg, "mon sac pour demain")[0][1]["jour"] == "demain"
+    from datetime import date
+    assert givre_infos.jour_vise("lundi", date(2026, 11, 21)).isoformat() == "2026-11-23"
+    r = reg.outils["liste_du_sac"].fonction(jour="lundi")
+    assert r.ok
+    assert "EPS" in r.pour_ia and "LATIN" not in r.pour_ia and "MATHS" not in r.pour_ia
+
+
+def test_nom_navigateur():
+    from modules.applis import nom_navigateur
+    assert nom_navigateur("ChromeHTML") == "Google Chrome"
+    assert nom_navigateur("MSEdgeHTM") == "Microsoft Edge"
+    assert nom_navigateur("FirefoxURL-308046B0AF4A39CB") == "Firefox"
+    assert nom_navigateur("BraveHTML") == "Brave"
+    assert nom_navigateur("OperaStable") == "Opera"
+    assert nom_navigateur("Truc.html") == "Truc.html"
+
+
+def test_raccourci_navigateur():
+    reg = registre(applis)
+    assert raccourci(reg, "Quel est mon navigateur par défaut ?") == [("navigateur_par_defaut", {})]
