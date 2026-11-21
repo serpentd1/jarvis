@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::gfx::{Rgba, WHITE, Wt};
 use crate::island::*;
-use crate::island_cards::{self, caps, icon, media_card, vgrad, weather_card};
+use crate::island_cards::{self, caps, icon, media_card, weather_card};
 use crate::island_draw::*;
 use crate::jarvis_data::{arr, mem_reason, mem_rows, s, MEM_FILTERS, MEM_SORTS};
 use crate::pronote::{Lesson, School};
@@ -15,7 +15,8 @@ use crate::widgets::{self, Action, Ctx, GREEN, ORANGE, RED};
 
 pub const BIG_W: f32 = 1100.0;
 pub const BIG_H: f32 = 720.0;
-const SIDEBAR: f32 = 212.0;
+/// N° de « Paramètres » dans SECTIONS : cette section ne peut pas être cachée.
+pub const SEC_PARAMS: usize = 17;
 
 /// Sections de la grande île, dans l'ordre de la barre.
 pub const SECTIONS: [(View, Tab, &str); 20] = [
@@ -67,6 +68,10 @@ pub struct BigUi {
     pub mem_edit: Option<String>,
     /// Premier clic sur « Supprimer » : il faut confirmer dans les 5 s.
     pub mem_confirm: Option<std::time::Instant>,
+    /// Paramètres : page choisie (n° dans reglages::PAGES).
+    pub reg_page: usize,
+    /// Dernière page de la grande appli (pour « Page qui s'ouvre en premier : Dernière page »).
+    pub last_view: Option<View>,
 }
 
 impl BigUi {
@@ -98,6 +103,8 @@ impl Default for BigUi {
             mem_checked: Vec::new(),
             mem_edit: None,
             mem_confirm: None,
+            reg_page: 0,
+            last_view: None,
         }
     }
 }
@@ -112,32 +119,163 @@ pub fn is_big(r: &R) -> bool {
 
 // ---------- Grand panneau ----------
 
+/// Taille de la grande appli (réglages « Largeur » et « Hauteur »).
+pub fn big_size(c: &crate::config::IleCfg) -> (f32, f32) {
+    (BIG_W * c.g_largeur.clamp(0.75, 1.3), BIG_H * c.g_hauteur.clamp(0.75, 1.3))
+}
+
+/// Largeur de la colonne des sections.
+pub fn colonne(c: &crate::config::IleCfg) -> f32 {
+    if c.g_reduite { 64.0 } else { c.g_colonne.clamp(140.0, 300.0) }
+}
+
+/// Ordre des sections (n° dans SECTIONS) : l'ordre choisi, puis celles qui n'y sont pas encore.
+pub fn ordre(c: &crate::config::IleCfg) -> Vec<usize> {
+    let mut v: Vec<usize> = Vec::new();
+    for &i in &c.g_ordre {
+        let i = i as usize;
+        if i < SECTIONS.len() && !v.contains(&i) {
+            v.push(i);
+        }
+    }
+    v.extend((0..SECTIONS.len()).filter(|i| !c.g_ordre.contains(&(*i as u8))));
+    v
+}
+
+/// Section cachée dans la colonne ? (« Paramètres » ne l'est jamais.)
+pub fn cachee(c: &crate::config::IleCfg, i: usize) -> bool {
+    i != SEC_PARAMS && c.g_cachees.contains(&(i as u8))
+}
+
+/// Animation de page en cours : (sorte, avancement 0 → 1). 1 = fondu, 2 = glissement, 3 = zoom.
+pub fn anim_page(r: &R) -> Option<(usize, f32)> {
+    let c = r.c();
+    let (t0, ouverture) = r.st.page_t?;
+    let sorte = if c.g_anim_page > 0 { c.g_anim_page } else if ouverture && c.g_anim_ouverture { 1 } else { return None };
+    if !is_big(r) {
+        return None;
+    }
+    let k = t0.elapsed().as_secs_f32() * 1000.0 / c.g_anim_duree.max(50.0);
+    (k < 1.0).then_some((sorte, k))
+}
+
+/// La souris est-elle sur cette zone (coordonnées de dessin) ?
+fn survole(c: &Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) -> bool {
+    r.st.souris.is_some_and(|(mx, my)| {
+        let (px, py) = (c.ox + x * c.s, c.oy + y * c.s);
+        mx >= px && mx < px + w * c.s && my >= py && my < py + h * c.s
+    })
+}
+
 pub fn big_view(c: &mut Ctx, r: &R, w: f32, h: f32) {
     let t = c.t;
+    let cf = r.c();
     island_cards::header(c, r, w);
-    // barre des sections
+    // colonne des sections
+    let sb = colonne(cf);
     let cur = Tab::of(r.st.view);
-    let mut y = 48.0;
-    for (v, tab, name) in SECTIONS {
+    let list: Vec<usize> = ordre(cf).into_iter().filter(|&i| !cachee(cf, i)).collect();
+    let y0 = 48.0;
+    let bas = if r.st.big_force { 44.0 } else { 12.0 } + if cf.g_heure { 24.0 } else { 0.0 };
+    let pas = cf.g_espace.clamp(22.0, 44.0).min((h - y0 - bas) / list.len().max(1) as f32);
+    let hl = (pas - 1.0).max(16.0);
+    if cf.g_fond_colonne {
+        c.rr(6.0, 44.0, sb - 8.0, h - 52.0, 14.0, t.fg.a(0.06));
+    }
+    let n = SECTIONS.len() as f32;
+    let mut y = y0;
+    for &i in &list {
+        let (v, tab, name) = SECTIONS[i];
         let on = tab == cur;
+        let teinte = cf.g_couleurs.then(|| hsv(i as f32 / n, 0.55, 1.0));
+        let dx = if cf.g_survol && !on && survole(c, r, 12.0, y, sb - 20.0, hl) { 5.0 } else { 0.0 };
+        let (bx, bw) = (12.0 + dx, sb - 20.0);
+        let rad = (hl * 0.37).min(11.0);
+        let mut fg = if on { t.fg } else { t.fg2 };
         if on {
-            c.rr(12.0, y, SIDEBAR - 20.0, 30.0, 11.0, t.fg.a(0.13));
+            match cf.g_selection {
+                1 => {
+                    c.rr(bx, y, bw, hl, rad, teinte.unwrap_or(t.accent).a(0.9));
+                    fg = WHITE;
+                }
+                2 => c.rr_stroke(bx, y, bw, hl, rad, teinte.unwrap_or(t.accent), 1.5),
+                3 => {
+                    c.rr(bx, y, bw, hl, rad, t.fg.a(0.08));
+                    c.rr(bx, y + 5.0, 3.5, hl - 10.0, 1.75, teinte.unwrap_or(t.accent));
+                }
+                _ => c.rr(bx, y, bw, hl, rad, teinte.map(|k| k.a(0.28)).unwrap_or(t.fg.a(0.13))),
+            }
         }
-        icon(c, tab, 32.0, y + 15.0, if on { t.fg } else { t.fg2 });
-        c.text(Wt::Semibold, 13.0, 52.0, y + 20.0, if on { t.fg } else { t.fg2 }, name);
-        c.hit(12.0, y, SIDEBAR - 20.0, 30.0, Action::IleN(N_SECTION, v as u16));
-        y += 31.0;      // 20 sections : elles tiennent au-dessus du bouton « Fermer »
+        let ic = if on && cf.g_selection == 1 { WHITE } else { teinte.unwrap_or(fg) };
+        if cf.g_reduite {
+            icon(c, tab, sb / 2.0 - 4.0 + dx, y + hl / 2.0, ic);
+        } else {
+            let mut tx = 20.0 + dx;
+            if cf.g_icones {
+                icon(c, tab, 32.0 + dx, y + hl / 2.0, ic);
+                tx = 52.0 + dx;
+            }
+            let wt = if cf.g_gras { Wt::Semibold } else { Wt::Regular };
+            let fsz = (hl * 0.45).clamp(11.0, 13.5);
+            let name = c.fit(wt, fsz, name, sb - tx - 14.0);
+            c.text(wt, fsz, tx, y + hl / 2.0 + fsz * 0.38, fg, &name);
+        }
+        c.hit(12.0, y, sb - 20.0, hl, Action::IleN(N_SECTION, v as u16));
+        y += pas;
+    }
+    if cf.g_heure {
+        let yh = if r.st.big_force { h - 48.0 } else { h - 14.0 };
+        let hh = r.now.format("%H:%M").to_string();
+        c.text_c(Wt::Semibold, 15.0, sb / 2.0, yh, t.fg2, &hh);
     }
     if r.st.big_force {
-        chip(c, 16.0, h - 36.0, "Fermer (Échap)", t.fg.a(0.12), t.fg2, Some(Action::Ile(A_BIG_CLOSE)));
+        let lab = if cf.g_reduite { "Fermer" } else { "Fermer (Échap)" };
+        chip(c, if cf.g_reduite { 6.0 } else { 16.0 }, h - 36.0, lab, t.fg.a(0.12), t.fg2, Some(Action::Ile(A_BIG_CLOSE)));
     }
-    c.line(SIDEBAR, 50.0, SIDEBAR, h - 16.0, 1.0, t.sep);
-    // contenu
+    if cf.g_ligne {
+        c.line(sb, 50.0, sb, h - 16.0, 1.0, t.sep);
+    }
+    // contenu (avec l'animation de changement de page)
     let (ox, oy) = (c.ox, c.oy);
-    c.ox += (SIDEBAR - 4.0) * c.s;
+    c.ox += (sb - 4.0) * c.s;
     c.oy += island_cards::TOP * c.s;
-    let cw = w - SIDEBAR + 4.0;
+    let cw = w - sb + 4.0;
     let ch = h - island_cards::TOP - 12.0;
+    match anim_page(r) {
+        Some((2, k)) => {
+            let e = 1.0 - (1.0 - k).powi(3);
+            c.ox += (1.0 - e) * 40.0 * c.s;
+            contenu(c, r, cw, ch);
+        }
+        Some((sorte, k)) => {
+            let e = 1.0 - (1.0 - k).powi(3);
+            if let Some(mut layer) = tiny_skia::Pixmap::new(c.pm.width(), c.pm.height()) {
+                let hits = {
+                    let mut sub = Ctx::new(&mut layer, c.f, c.t, c.s, c.ox, c.oy);
+                    sub.tf = c.tf;
+                    sub.bold = c.bold;
+                    contenu(&mut sub, r, cw, ch);
+                    sub.hits
+                };
+                c.hits.extend(hits);
+                let tr = if sorte == 3 {
+                    let z = 0.95 + 0.05 * e;
+                    let (zx, zy) = (c.ox + cw * c.s / 2.0, c.oy + ch * c.s / 2.0);
+                    tiny_skia::Transform::from_translate(zx, zy).pre_scale(z, z).pre_translate(-zx, -zy)
+                } else {
+                    tiny_skia::Transform::identity()
+                };
+                let pp = tiny_skia::PixmapPaint { opacity: e.clamp(0.0, 1.0), quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+                c.pm.draw_pixmap(0, 0, layer.as_ref(), &pp, tr, None);
+            }
+        }
+        None => contenu(c, r, cw, ch),
+    }
+    c.ox = ox;
+    c.oy = oy;
+}
+
+fn contenu(c: &mut Ctx, r: &R, cw: f32, ch: f32) {
     match r.st.view {
         View::Main => big_home(c, r, cw, ch),
         v => {
@@ -146,8 +284,6 @@ pub fn big_view(c: &mut Ctx, r: &R, w: f32, h: f32) {
             }
         }
     }
-    c.ox = ox;
-    c.oy = oy;
 }
 
 /// Pages propres aux sections de Jarvis. `false` = page déjà existante (à dessiner par island_cards).
@@ -1466,8 +1602,14 @@ pub fn pc_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
 // ---------- Paramètres de Jarvis ----------
 
 pub fn jsettings_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
-    let t = c.t;
-    let mut rows: Vec<(String, String, Option<bool>, Vec<(Action, &'static str)>)> = Vec::new();
+    crate::reglages::page(c, r, w, h);
+}
+
+/// Réglages de Jarvis (page « Jarvis et voix ») : (nom, valeur, interrupteur, boutons).
+pub type JRow = (String, String, Option<bool>, Vec<(Action, &'static str)>);
+
+pub fn jarvis_rows(r: &R) -> Vec<JRow> {
+    let mut rows: Vec<JRow> = Vec::new();
     // ── réglés par la barre : l'IA, le PC, le PAI (marchent même sans l'assistant vocal)
     let choix = crate::profils::CHOIX_MODELE.iter().find(|c| c.0 == r.cfg.ia_mode).map(|c| c.1).unwrap_or("Auto");
     let mode = if r.cfg.ia_mode != 2 && !crate::ia::cle_nvidia() { format!("{choix} — il manque la clé NVIDIA") } else { choix.to_string() };
@@ -1525,44 +1667,7 @@ pub fn jsettings_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
             _ => rows.push((lab, rg["valeur"].as_str().unwrap_or("").into(), None, vec![(Action::IleN(N_SET_TEXT, i), "Modifier")])),
         }
     }
-    let mut y = 4.0;
-    for (lab, val, toggle, acts) in rows.into_iter().skip(r.st.scroll) {
-        if y + 40.0 > h - 22.0 {
-            break;
-        }
-        c.rr(SIDE - 6.0, y, w - 2.0 * SIDE + 12.0, 36.0, 10.0, t.fg.a(0.05));
-        let lab = c.fit(Wt::Regular, 13.0, &lab, w * 0.55);
-        c.text(Wt::Regular, 13.0, SIDE + 4.0, y + 23.0, t.fg, &lab);
-        let xr = w - SIDE;
-        match toggle {
-            Some(on) => {
-                let (sx, sy) = (xr - 44.0, y + 8.0);
-                c.rr(sx, sy, 40.0, 20.0, 10.0, if on { t.accent } else { t.track });
-                c.circle(if on { sx + 30.0 } else { sx + 10.0 }, sy + 10.0, 8.0, WHITE);
-                c.hit(SIDE - 6.0, y, w - 2.0 * SIDE + 12.0, 36.0, acts[0].0);
-            }
-            None => {
-                let mut x = xr;
-                for (a, lab) in acts.iter().rev() {
-                    let bw = c.measure(Wt::Semibold, 12.0, lab) + 20.0;
-                    x -= bw;
-                    chip(c, x, y + 6.0, lab, t.fg.a(0.12), t.fg, Some(*a));
-                    x -= 6.0;
-                }
-                let editing = r.st.typing
-                    && acts.iter().any(|(a, _)| match (a, r.st.input_for) {
-                        (Action::IleN(N_SET_TEXT, k), InputFor::Setting(j)) | (Action::IleN(N_PAI_TEXT, k), InputFor::Pai(j)) => *k as usize == j,
-                        _ => false,
-                    });
-                let shown = if editing { format!("{}|", r.st.input) } else { val };
-                let vv = c.fit(Wt::Semibold, 12.5, &shown, (x - w * 0.6).max(60.0));
-                c.text_r(Wt::Semibold, 12.5, x - 8.0, y + 23.0, if editing { t.accent } else { t.fg2 }, &vv);
-            }
-        }
-        y += 40.0;
-    }
-    c.text(Wt::Regular, 11.5, SIDE, h - 6.0, t.fg3, "Certains réglages servent au prochain démarrage de Jarvis. Molette pour voir la suite.");
-    let _ = vgrad;
+    rows
 }
 
 /// Une page « détail » existante, sur toute la hauteur du grand panneau.

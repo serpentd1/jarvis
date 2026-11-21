@@ -1,18 +1,9 @@
-//! Fenêtre des paramètres, dessinée comme les widgets (style Réglages de Mac / iPhone).
-
-use tiny_skia::Pixmap;
-use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::Graphics::Gdi::{DIB_RGB_COLORS, HDC, SetDIBitsToDevice};
+//! Paramètres de Jarvis (comptes, IA, agenda, Pronote…) : description des pages et lecture / écriture
+//! des réglages. Ils s'affichent dans la grande application › Paramètres (voir reglages.rs).
 
 use crate::config::Config;
-use crate::gfx::{self, Fonts, Rgba, Theme, WHITE, Wt};
-use crate::widgets::Ctx;
 
-pub const WIN_W: f32 = 860.0;
-pub const WIN_H: f32 = 600.0;
-const SIDE: f32 = 224.0;
-const TOP: f32 = 68.0;
-const PAGES: [&str; 6] = ["Apparence", "Widgets", "Agenda", "Comptes", "IA", "Général"];
+pub const PAGES: [&str; 6] = ["Apparence", "Widgets", "Agenda", "Comptes", "IA", "Général"];
 pub const ACCENTS: [[u8; 3]; 8] = [
     [52, 199, 89],
     [0, 199, 190],
@@ -115,7 +106,7 @@ pub enum F {
 }
 
 #[derive(Clone, Copy)]
-enum K {
+pub enum K {
     Head,
     Toggle,
     Slider(f32, f32, &'static str, f32),
@@ -126,15 +117,6 @@ enum K {
     /// Un service d'IA : interrupteur, « En premier », « Retirer ».
     Ia,
     Note,
-}
-
-struct Row {
-    k: K,
-    f: Option<F>,
-    label: String,
-    y: f32,
-    h: f32,
-    lines: Vec<String>,
 }
 
 /// État de Pronote affiché dans Paramètres › Comptes.
@@ -148,63 +130,16 @@ pub struct PnInfo {
 
 pub struct Info {
     pub pn: PnInfo,
-    pub edit: bool,
     pub mem: String,
-    pub status: String,
     pub acc: crate::data::AccountsInfo,
     pub discord: String,
     pub winnotif: String,
     pub ia: crate::ia::Vue,
 }
 
-pub struct Settings {
-    pub hwnd: HWND,
-    /// Dernier texte validé (Entrée) dans une case : sert à la clé d'API.
-    pub texte: String,
-    page: usize,
-    scroll: f32,
-    rows: Vec<Row>,
-    bottom: f32,
-    focus: Option<F>,
-    edit: Vec<char>,
-    caret: usize,
-    pub drag: Option<F>,
-    buf: Vec<u8>,
-    size: (i32, i32),
-}
-
-impl Settings {
-    pub fn new(hwnd: HWND) -> Self {
-        Settings {
-            hwnd,
-            page: 0,
-            scroll: 0.0,
-            rows: Vec::new(),
-            bottom: 0.0,
-            focus: None,
-            edit: Vec::new(),
-            caret: 0,
-            drag: None,
-            texte: String::new(),
-            buf: Vec::new(),
-            size: (0, 0),
-        }
-    }
-    pub fn page(&self) -> usize {
-        self.page
-    }
-    pub fn has_focus(&self) -> bool {
-        self.focus.is_some()
-    }
-    pub fn set_page(&mut self, p: usize) {
-        self.page = p.min(PAGES.len() - 1);
-        self.scroll = 0.0;
-    }
-}
-
 // ---------- Lecture / écriture des réglages ----------
 
-fn get_b(c: &Config, f: F) -> bool {
+pub fn get_b(c: &Config, f: F) -> bool {
     match f {
         F::Blur => c.blur,
         F::Border => c.border,
@@ -247,7 +182,7 @@ fn get_b(c: &Config, f: F) -> bool {
     }
 }
 
-fn set_b(c: &mut Config, f: F, v: bool) {
+pub fn set_b(c: &mut Config, f: F, v: bool) {
     let r = match f {
         F::Blur => &mut c.blur,
         F::Border => &mut c.border,
@@ -291,7 +226,7 @@ fn set_b(c: &mut Config, f: F, v: bool) {
     *r = v;
 }
 
-fn get_f(c: &Config, f: F) -> f32 {
+pub fn get_f(c: &Config, f: F) -> f32 {
     match f {
         F::Scale => c.scale,
         F::BlurAmt => c.blur_amount,
@@ -303,7 +238,7 @@ fn get_f(c: &Config, f: F) -> f32 {
     }
 }
 
-fn set_f(c: &mut Config, f: F, v: f32) {
+pub fn set_f(c: &mut Config, f: F, v: f32) {
     match f {
         F::Scale => c.scale = (v * 20.0).round() / 20.0,
         F::BlurAmt => c.blur_amount = (v * 100.0).round() / 100.0,
@@ -315,7 +250,7 @@ fn set_f(c: &mut Config, f: F, v: f32) {
     }
 }
 
-fn get_i(c: &Config, f: F) -> usize {
+pub fn get_i(c: &Config, f: F) -> usize {
     match f {
         F::Theme => c.theme,
         F::Weight => c.clock_weight,
@@ -323,7 +258,7 @@ fn get_i(c: &Config, f: F) -> usize {
     }
 }
 
-fn set_i(c: &mut Config, f: F, v: usize) {
+pub fn set_i(c: &mut Config, f: F, v: usize) {
     match f {
         F::Theme => c.theme = v,
         F::Weight => c.clock_weight = v,
@@ -331,7 +266,7 @@ fn set_i(c: &mut Config, f: F, v: usize) {
     }
 }
 
-fn get_t(c: &Config, f: F) -> String {
+pub fn get_t(c: &Config, f: F) -> String {
     match f {
         F::City => c.weather.city.clone(),
         F::Acad => c.countdown.academie.clone(),
@@ -354,7 +289,7 @@ fn get_t(c: &Config, f: F) -> String {
     }
 }
 
-fn set_t(c: &mut Config, f: F, v: String) {
+pub fn set_t(c: &mut Config, f: F, v: String) {
     match f {
         F::City => c.weather.city = v,
         F::Acad => c.countdown.academie = v,
@@ -395,7 +330,7 @@ impl B {
 
 const PCT: K = K::Slider(0.0, 1.0, " %", 100.0);
 
-fn spec(page: usize, info: &Info) -> Vec<(K, Option<F>, String)> {
+pub fn spec(page: usize, info: &Info) -> Vec<(K, Option<F>, String)> {
     let mut b = B(Vec::new());
     match page {
         0 => {
@@ -557,430 +492,30 @@ fn spec(page: usize, info: &Info) -> Vec<(K, Option<F>, String)> {
     b.0
 }
 
-fn wrap(fonts: &Fonts, s: &str, size: f32, max: f32) -> Vec<String> {
+/// Réglages qui ne servent qu'aux widgets du bureau (ils sont dans Givre maintenant) : pas affichés.
+fn widget_seul(f: F) -> bool {
+    matches!(
+        f,
+        F::Weight | F::Scale | F::Blur | F::BlurAmt | F::Opacity | F::Shadow | F::Border | F::Radius | F::Cont
+            | F::ClockOn | F::Secs | F::H24 | F::Date | F::Week | F::WeatherOn | F::Hourly | F::Daily
+            | F::CalOn | F::Agenda | F::CalHol | F::CountOn | F::HideWin | F::Grid | F::Locked | F::Edit | F::Reset
+    )
+}
+
+/// Lignes d'une page (avec leur n° dans `spec`), sans les réglages des widgets ni les titres restés vides.
+pub fn lignes(page: usize, info: &Info) -> Vec<(usize, K, Option<F>, String)> {
+    let v: Vec<_> = spec(page, info)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (k, f, t))| !f.is_some_and(widget_seul) && !(matches!(k, K::Note) && (t.starts_with("Glisse") || t.starts_with("Ton emploi"))))
+        .map(|(i, (k, f, t))| (i, k, f, t))
+        .collect();
     let mut out = Vec::new();
-    let mut line = String::new();
-    for w in s.split_whitespace() {
-        let cand = if line.is_empty() { w.to_string() } else { format!("{line} {w}") };
-        if !line.is_empty() && fonts.measure(Wt::Regular, size, &cand, 0.0) > max {
-            out.push(std::mem::take(&mut line));
-            line = w.to_string();
-        } else {
-            line = cand;
+    for (i, l) in v.iter().enumerate() {
+        let vide = matches!(l.1, K::Head) && v.get(i + 1).map_or(true, |n| matches!(n.1, K::Head));
+        if !vide {
+            out.push(l.clone());
         }
-    }
-    if !line.is_empty() {
-        out.push(line);
     }
     out
-}
-
-fn layout(st: &mut Settings, fonts: &Fonts, info: &Info) {
-    let note_w = WIN_W - SIDE - 48.0 - 32.0;
-    let mut y = TOP + 4.0;
-    st.rows.clear();
-    for (k, f, label) in spec(st.page, info) {
-        let (h, lines) = match k {
-            K::Head => (if st.rows.is_empty() { 34.0 } else { 50.0 }, Vec::new()),
-            K::Note => {
-                let l = wrap(fonts, &label, 13.5, note_w);
-                (l.len() as f32 * 20.0 + 22.0, l)
-            }
-            _ => (46.0, Vec::new()),
-        };
-        st.rows.push(Row { k, f, label, y, h, lines });
-        y += h;
-    }
-    st.bottom = y + 28.0;
-    st.scroll = st.scroll.clamp(0.0, (st.bottom - WIN_H).max(0.0));
-}
-
-fn slider_span(xr: f32) -> (f32, f32) {
-    (xr - 270.0, xr - 62.0)
-}
-
-fn swatch_x(xr: f32, i: usize) -> f32 {
-    xr - 11.0 - (ACCENTS.len() - 1 - i) as f32 * 30.0
-}
-
-const XR: f32 = WIN_W - 40.0;
-
-#[allow(clippy::too_many_arguments)]
-fn control(c: &mut Ctx, st: &Settings, cfg: &Config, k: K, f: F, y: f32, info: &Info) {
-    let t = c.t;
-    let xr = XR;
-    match k {
-        K::Toggle => {
-            let on = get_b(cfg, f);
-            let tx = xr - 42.0;
-            c.rr(tx, y + 11.0, 42.0, 24.0, 12.0, if on { t.accent } else { t.fg.a(0.16) });
-            c.circle(if on { tx + 30.0 } else { tx + 12.0 }, y + 23.0, 10.0, WHITE);
-        }
-        K::Slider(min, max, unit, mul) => {
-            let (a, b) = slider_span(xr);
-            let v = get_f(cfg, f);
-            let p = ((v - min) / (max - min)).clamp(0.0, 1.0);
-            c.rr(a, y + 21.0, b - a, 4.0, 2.0, t.track);
-            c.rr(a, y + 21.0, (b - a) * p, 4.0, 2.0, t.accent);
-            let kx = a + (b - a) * p;
-            c.circle(kx, y + 23.0, 10.5, Rgba(0.0, 0.0, 0.0, 0.2));
-            c.circle(kx, y + 23.0, 9.5, WHITE);
-            c.text_r(Wt::Regular, 13.5, xr, y + 28.0, t.fg2, &format!("{}{}", (v * mul).round() as i32, unit));
-        }
-        K::Seg(opts) => {
-            let sw = 88.0;
-            let x = xr - sw * opts.len() as f32;
-            let sel = get_i(cfg, f);
-            c.rr(x, y + 8.0, sw * opts.len() as f32, 30.0, 8.0, t.fg.a(0.08));
-            c.rr(x + sw * sel as f32 + 2.0, y + 10.0, sw - 4.0, 26.0, 6.5, t.accent);
-            for (i, o) in opts.iter().enumerate() {
-                let on = i == sel;
-                let (wt, col) = if on { (Wt::Semibold, WHITE) } else { (Wt::Regular, t.fg) };
-                c.text_c(wt, 13.0, x + sw * (i as f32 + 0.5), y + 27.5, col, o);
-            }
-        }
-        K::Swatch => {
-            for (i, col) in ACCENTS.iter().enumerate() {
-                let cx = swatch_x(xr, i);
-                c.circle(cx, y + 23.0, 10.5, Rgba::from(*col));
-                if !cfg.accent_auto && cfg.accent == *col {
-                    c.ring(cx, y + 23.0, 14.0, t.fg, 2.0);
-                }
-            }
-        }
-        K::Text(ph) => {
-            let (bx, bw) = (xr - 240.0, 240.0);
-            let foc = st.focus == Some(f);
-            c.rr(bx, y + 8.0, bw, 30.0, 7.0, t.fg.a(0.07));
-            c.rr_stroke(bx, y + 8.0, bw, 30.0, 7.0, if foc { t.accent } else { t.fg.a(0.16) }, if foc { 2.0 } else { 1.0 });
-            let txt: String = if foc { st.edit.iter().collect() } else { get_t(cfg, f) };
-            let txt = if (f == F::DcSecret || f == F::PnPin) && !foc && !txt.is_empty() { "•".repeat(txt.chars().count().min(24)) } else { txt };
-            if txt.is_empty() && !foc {
-                c.text(Wt::Regular, 14.0, bx + 10.0, y + 28.0, t.fg3, ph);
-            } else {
-                let shown = c.fit(Wt::Regular, 14.0, &txt, bw - 20.0);
-                c.text(Wt::Regular, 14.0, bx + 10.0, y + 28.0, t.fg, &shown);
-            }
-            if foc {
-                let pre: String = st.edit[..st.caret.min(st.edit.len())].iter().collect();
-                let cx = bx + 10.0 + c.measure(Wt::Regular, 14.0, &pre).min(bw - 20.0);
-                c.line(cx, y + 14.0, cx, y + 32.0, 1.5, t.accent);
-            }
-        }
-        K::Ia => {
-            // ligne d'un service : interrupteur à droite, puis « En premier » et « Retirer »
-            let Some(l) = info.ia.lignes.iter().find(|l| F::IaOn(l.index) == f) else { return };
-            let tx = xr - 42.0;
-            c.rr(tx, y + 11.0, 42.0, 24.0, 12.0, if l.on { t.accent } else { t.fg.a(0.16) });
-            c.circle(if l.on { tx + 30.0 } else { tx + 12.0 }, y + 23.0, 10.0, WHITE);
-            let (bx, bw) = (xr - 236.0, 100.0);
-            if l.premier {
-                c.rr(bx, y + 8.0, bw, 30.0, 8.0, t.accent);
-                c.text_c(Wt::Semibold, 13.0, bx + bw / 2.0, y + 27.5, WHITE, "Premier");
-            } else {
-                c.rr(bx, y + 8.0, bw, 30.0, 8.0, t.fg.a(0.09));
-                c.text_c(Wt::Semibold, 13.0, bx + bw / 2.0, y + 27.5, t.fg, "En premier");
-            }
-            let (dx, dw) = (xr - 128.0, 74.0);
-            c.rr(dx, y + 8.0, dw, 30.0, 8.0, t.fg.a(0.09));
-            c.text_c(Wt::Semibold, 13.0, dx + dw / 2.0, y + 27.5, t.fg, "Retirer");
-        }
-        K::Button(l) => {
-            let l = if f == F::Edit && info.edit { "Terminer" } else { l };
-            let bw = c.measure(Wt::Semibold, 13.0, l) + 30.0;
-            let red = Rgba::rgb8(255, 69, 58);
-            let (bg, fg) = if f == F::Quit {
-                (red.a(0.15), red)
-            } else if f == F::Edit && info.edit {
-                (t.accent, WHITE)
-            } else {
-                (t.fg.a(0.09), t.fg)
-            };
-            c.rr(xr - bw, y + 8.0, bw, 30.0, 8.0, bg);
-            c.text_c(Wt::Semibold, 13.0, xr - bw / 2.0, y + 27.5, fg, l);
-        }
-        _ => {}
-    }
-}
-
-/// Dessine toute la fenêtre des paramètres.
-pub fn draw(st: &mut Settings, cfg: &Config, fonts: &Fonts, t: &Theme, dpi: f32, info: &Info) -> Option<Pixmap> {
-    layout(st, fonts, info);
-    let mut pm = Pixmap::new((WIN_W * dpi).round() as u32, (WIN_H * dpi).round() as u32)?;
-    let bg = if t.dark { Rgba::rgb8(30, 30, 32) } else { Rgba::rgb8(242, 242, 247) };
-    let side = if t.dark { Rgba::rgb8(40, 40, 43) } else { Rgba::rgb8(228, 228, 233) };
-    let group = if t.dark { Rgba(1.0, 1.0, 1.0, 0.055) } else { WHITE };
-    pm.fill(bg.color());
-    let st: &Settings = st;
-    let mut c = Ctx::new(&mut pm, fonts, t, dpi, 0.0, 0.0);
-    let x0 = SIDE + 24.0;
-    let gw = WIN_W - SIDE - 48.0;
-    let xl = x0 + 16.0;
-
-    // cartes qui regroupent les lignes
-    let mut i = 0;
-    while i < st.rows.len() {
-        if matches!(st.rows[i].k, K::Head) {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < st.rows.len() && !matches!(st.rows[i].k, K::Head) {
-            i += 1;
-        }
-        let gy = st.rows[start].y - st.scroll;
-        let gh = st.rows[i - 1].y + st.rows[i - 1].h - st.rows[start].y;
-        c.rr(x0, gy, gw, gh, 10.0, group);
-    }
-    for (ri, r) in st.rows.iter().enumerate() {
-        let y = r.y - st.scroll;
-        if y + r.h < TOP - 10.0 || y > WIN_H {
-            continue;
-        }
-        if ri > 0 && !matches!(r.k, K::Head) && !matches!(st.rows[ri - 1].k, K::Head) {
-            c.hline(xl, x0 + gw, y, t.sep);
-        }
-        match r.k {
-            K::Head => {
-                c.text(Wt::Semibold, 13.0, x0 + 4.0, y + r.h - 12.0, t.fg2, &r.label);
-            }
-            K::Note => {
-                for (li, l) in r.lines.iter().enumerate() {
-                    c.text(Wt::Regular, 13.5, xl, y + 26.0 + li as f32 * 20.0, t.fg2, l);
-                }
-            }
-            k => {
-                c.text(Wt::Regular, 14.0, xl, y + 28.0, t.fg, &r.label);
-                if let Some(f) = r.f {
-                    control(&mut c, st, cfg, k, f, y, info);
-                }
-            }
-        }
-    }
-
-    // titre de la page (masque ce qui défile dessous)
-    c.rr(SIDE, 0.0, WIN_W - SIDE, TOP, 0.0, bg);
-    c.text(Wt::Semibold, 24.0, x0 + 4.0, 46.0, t.fg, PAGES[st.page]);
-
-    // barre latérale
-    c.rr(0.0, 0.0, SIDE, WIN_H, 0.0, side);
-    c.text(Wt::Semibold, 22.0, 24.0, 46.0, t.fg, "Jarvis");
-    c.text(Wt::Regular, 12.5, 24.0, 66.0, t.fg2, "Widgets de bureau");
-    for (i, p) in PAGES.iter().enumerate() {
-        let y = 96.0 + i as f32 * 40.0;
-        if i == st.page {
-            c.rr(12.0, y, SIDE - 24.0, 34.0, 8.0, t.accent);
-            c.text(Wt::Semibold, 14.0, 26.0, y + 22.5, WHITE, p);
-        } else {
-            c.text(Wt::Regular, 14.0, 26.0, y + 22.5, t.fg, p);
-        }
-    }
-    if !info.status.is_empty() {
-        let lines = wrap(fonts, &info.status, 12.5, SIDE - 44.0);
-        let y0 = WIN_H - 50.0 - lines.len() as f32 * 18.0;
-        for (li, l) in lines.iter().enumerate() {
-            c.text(Wt::Semibold, 12.5, 24.0, y0 + li as f32 * 18.0, t.accent, l);
-        }
-    }
-    c.text(Wt::Regular, 12.5, 24.0, WIN_H - 22.0, t.fg3, &info.mem);
-    drop(c);
-    Some(pm)
-}
-
-/// Garde l'image prête à être affichée (format Windows BGRA).
-pub fn store(st: &mut Settings, pm: &Pixmap) {
-    st.size = (pm.width() as i32, pm.height() as i32);
-    st.buf.resize(pm.data().len(), 0);
-    gfx::rgba_to_bgra(pm.data(), &mut st.buf);
-}
-
-pub unsafe fn blit(st: &Settings, hdc: HDC) {
-    if st.buf.is_empty() {
-        return;
-    }
-    let (w, h) = st.size;
-    let bmi = gfx::bmi32(w, h);
-    SetDIBitsToDevice(hdc, 0, 0, w as u32, h as u32, 0, 0, 0, h as u32, st.buf.as_ptr() as _, &bmi, DIB_RGB_COLORS);
-}
-
-// ---------- Souris et clavier ----------
-
-fn row_at(st: &Settings, x: f32, y: f32) -> Option<usize> {
-    if x < SIDE || y < TOP {
-        return None;
-    }
-    let cy = y + st.scroll;
-    st.rows.iter().position(|r| cy >= r.y && cy < r.y + r.h)
-}
-
-pub fn commit(st: &mut Settings, cfg: &mut Config) -> Option<F> {
-    let f = st.focus.take()?;
-    let s = st.edit.iter().collect::<String>().trim().to_string();
-    st.edit.clear();
-    st.texte = s.clone();
-    if s != get_t(cfg, f) {
-        set_t(cfg, f, s);
-        Some(f)
-    } else {
-        None
-    }
-}
-
-/// Clic (coordonnées logiques). Renvoie les réglages modifiés / boutons appuyés.
-pub fn down(st: &mut Settings, cfg: &mut Config, x: f32, y: f32) -> Vec<F> {
-    let mut out = Vec::new();
-    let hit = row_at(st, x, y);
-    let hit_f = hit.and_then(|i| st.rows[i].f);
-    if st.focus.is_some() && hit_f != st.focus {
-        if let Some(f) = commit(st, cfg) {
-            out.push(f);
-        }
-    }
-    if x < SIDE {
-        if y >= 96.0 {
-            let i = ((y - 96.0) / 40.0) as usize;
-            if i < PAGES.len() && i != st.page {
-                st.set_page(i);
-                st.focus = None;
-            }
-        }
-        return out;
-    }
-    let Some(i) = hit else { return out };
-    let (k, ry) = (st.rows[i].k, st.rows[i].y - st.scroll);
-    let Some(f) = st.rows[i].f else { return out };
-    match k {
-        K::Toggle => {
-            set_b(cfg, f, !get_b(cfg, f));
-            out.push(f);
-        }
-        K::Slider(min, max, _, _) => {
-            let (a, b) = slider_span(XR);
-            if x >= a - 14.0 && x <= b + 14.0 {
-                set_f(cfg, f, min + ((x - a) / (b - a)).clamp(0.0, 1.0) * (max - min));
-                st.drag = Some(f);
-                out.push(f);
-            }
-        }
-        K::Seg(opts) => {
-            let sw = 88.0;
-            let x0 = XR - sw * opts.len() as f32;
-            if x >= x0 {
-                let j = ((x - x0) / sw) as usize;
-                if j < opts.len() && j != get_i(cfg, f) {
-                    set_i(cfg, f, j);
-                    out.push(f);
-                }
-            }
-        }
-        K::Swatch => {
-            for (j, col) in ACCENTS.iter().enumerate() {
-                let cx = swatch_x(XR, j);
-                if (x - cx).abs() <= 14.0 && (y - (ry + 23.0)).abs() <= 14.0 {
-                    cfg.accent = *col;
-                    cfg.accent_auto = false;
-                    out.push(F::Accent);
-                }
-            }
-        }
-        K::Text(_) => {
-            if st.focus != Some(f) {
-                st.focus = Some(f);
-                st.edit = get_t(cfg, f).chars().collect();
-            }
-            st.caret = st.edit.len();
-        }
-        K::Ia => {
-            if let F::IaOn(i) = f {
-                // la zone de droite : interrupteur ; au milieu : « En premier » ; à gauche de « Retirer » : « Retirer »
-                if x >= XR - 42.0 {
-                    out.push(F::IaOn(i));
-                } else if (XR - 236.0..XR - 136.0).contains(&x) {
-                    out.push(F::IaTop(i));
-                } else if (XR - 128.0..XR - 54.0).contains(&x) {
-                    out.push(F::IaDel(i));
-                }
-            }
-        }
-        K::Button(_) => {
-            if x >= XR - 170.0 {
-                out.push(f);
-            }
-        }
-        _ => {}
-    }
-    out
-}
-
-pub fn drag(st: &mut Settings, cfg: &mut Config, x: f32) -> Option<F> {
-    let f = st.drag?;
-    let r = st.rows.iter().find(|r| r.f == Some(f))?;
-    if let K::Slider(min, max, _, _) = r.k {
-        let (a, b) = slider_span(XR);
-        let v = min + ((x - a) / (b - a)).clamp(0.0, 1.0) * (max - min);
-        let before = get_f(cfg, f);
-        set_f(cfg, f, v);
-        if (get_f(cfg, f) - before).abs() > 1e-4 {
-            return Some(f);
-        }
-    }
-    None
-}
-
-pub fn wheel(st: &mut Settings, d: i16) {
-    st.scroll = (st.scroll - d as f32 / 120.0 * 50.0).clamp(0.0, (st.bottom - WIN_H).max(0.0));
-}
-
-pub fn on_char(st: &mut Settings, cfg: &mut Config, ch: u32) -> Option<F> {
-    st.focus?;
-    match ch {
-        8 => {
-            if st.caret > 0 {
-                st.caret -= 1;
-                st.edit.remove(st.caret);
-            }
-            None
-        }
-        13 => commit(st, cfg),
-        27 => {
-            st.focus = None;
-            st.edit.clear();
-            None
-        }
-        22 => {
-            if let Some(t) = crate::sys::clipboard_text() {
-                for c in t.chars().filter(|c| !c.is_control()) {
-                    st.edit.insert(st.caret, c);
-                    st.caret += 1;
-                }
-            }
-            None
-        }
-        c if c >= 32 => {
-            if let Some(c) = char::from_u32(c) {
-                st.edit.insert(st.caret, c);
-                st.caret += 1;
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-pub fn on_key(st: &mut Settings, vk: u32) {
-    if st.focus.is_none() {
-        return;
-    }
-    match vk {
-        0x25 => st.caret = st.caret.saturating_sub(1),
-        0x27 => st.caret = (st.caret + 1).min(st.edit.len()),
-        0x24 => st.caret = 0,
-        0x23 => st.caret = st.edit.len(),
-        0x2E => {
-            if st.caret < st.edit.len() {
-                st.edit.remove(st.caret);
-            }
-        }
-        _ => {}
-    }
 }

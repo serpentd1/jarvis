@@ -1,18 +1,13 @@
-//! Fenêtre « Réglages de l'île » : toutes les options de la Dynamic Island, rangées par onglets.
-//! Chaque option est décrite une seule fois dans `opts()` (onglet, nom, type, limites).
-//! Clic sur un interrupteur : on/off. Flèches ‹ › (ou clic gauche / droit sur la ligne) : valeur suivante / précédente.
-
-use tiny_skia::Pixmap;
-use windows_sys::Win32::Foundation::HWND;
+//! Options de l'île et de la grande application, rangées par onglets (affichées dans la grande
+//! application › Paramètres, voir reglages.rs). Chaque option est décrite une seule fois dans `opts()`.
 
 use crate::brain::{MODELS, STYLES};
 use crate::config::IleCfg;
-use crate::gfx::{FONT_NAMES, Fonts, Rgba, Theme, WHITE, Wt};
+use crate::gfx::FONT_NAMES;
 use crate::island_cards::GRAD_NAMES;
-use crate::island_draw::{ACCENT_NAMES, PRESETS};
-use crate::widgets::Ctx;
+use crate::island_draw::ACCENT_NAMES;
 
-pub const TABS: [&str; 14] = [
+pub const TABS: [&str; 18] = [
     "Apparence",
     "Effets",
     "Taille et position",
@@ -27,7 +22,14 @@ pub const TABS: [&str; 14] = [
     "Animations",
     "Options rigolotes",
     "Disposition et onglets",
+    "Grande appli",
+    "Couleurs et fond",
+    "Texte et lisibilité",
+    "Animations de la grande appli",
 ];
+
+pub const DEPARTS: [&str; 7] = ["Accueil", "Aujourd'hui", "Dernière page ouverte", "Jarvis", "Tâches", "Pronote", "Paramètres"];
+pub const FONDS: [&str; 7] = ["Comme l'île", "Plus sombre", "Plus clair", "Dégradé de l'accent", "Noir profond", "Bleu nuit", "Violet"];
 
 pub enum K {
     B(fn(&mut IleCfg) -> &mut bool),
@@ -252,41 +254,51 @@ pub fn opts() -> Vec<Opt> {
         n!(13, "  position", ot_pc, 1.0, 20.0, 1.0, ""),
         b!(13, "Onglet Batteries", t_batteries),
         n!(13, "  position", ot_batteries, 1.0, 20.0, 1.0, ""),
-        b!(13, "Onglet Paramètres Jarvis", t_jsettings),
-        n!(13, "  position", ot_jsettings, 1.0, 20.0, 1.0, ""),
-
+        // 14 Grande appli
+        n!(14, "Largeur de la grande appli", g_largeur, 0.75, 1.3, 0.05, "%"),
+        n!(14, "Hauteur de la grande appli", g_hauteur, 0.75, 1.3, 0.05, "%"),
+        n!(14, "Largeur de la colonne de gauche", g_colonne, 150.0, 280.0, 10.0, "px"),
+        b!(14, "Colonne réduite (icônes seulement)", g_reduite),
+        b!(14, "Icônes dans la colonne", g_icones),
+        n!(14, "Hauteur des lignes de la colonne", g_espace, 24.0, 40.0, 1.0, "px"),
+        ch!(14, "Page qui s'ouvre en premier", g_depart, &DEPARTS),
+        b!(14, "Heure en bas de la colonne", g_heure),
+        // 15 Couleurs et fond
+        ch!(15, "Fond de la grande appli", g_fond, &FONDS),
+        n!(15, "Transparence en plus", g_transp, 0.0, 0.7, 0.05, "%"),
+        ch!(15, "Verre flouté derrière", g_flou, &["Comme l'île", "Toujours", "Jamais"]),
+        n!(15, "Arrondi des coins (0 = comme l'île)", g_arrondi, 0.0, 40.0, 2.0, "px"),
+        b!(15, "Liseré de la couleur d'accent", g_bord),
+        b!(15, "Clair le jour, sombre la nuit (toute l'île)", g_auto_theme),
+        n!(15, "  le jour commence à", g_jour, 4.0, 12.0, 0.5, "h"),
+        n!(15, "  la nuit commence à", g_nuit, 15.0, 23.5, 0.5, "h"),
+        b!(15, "Une couleur pour chaque section", g_couleurs),
+        ch!(15, "Section choisie", g_selection, &["Gris doux", "Couleur d'accent", "Contour", "Barre à gauche"]),
+        b!(15, "Fond derrière la colonne", g_fond_colonne),
+        b!(15, "Ligne entre la colonne et la page", g_ligne),
+        // 16 Texte et lisibilité
+        n!(16, "Taille du texte de la grande appli", g_texte, 0.85, 1.35, 0.05, "%"),
+        b!(16, "Contraste fort (textes gris plus lisibles)", g_contraste),
+        b!(16, "Noms des sections en gras", g_gras),
+        // 17 Animations de la grande appli
+        ch!(17, "Changement de page", g_anim_page, &["Aucune", "Fondu", "Glissement", "Zoom léger"]),
+        n!(17, "  durée", g_anim_duree, 100.0, 800.0, 50.0, "ms"),
+        b!(17, "Animer l'ouverture de la grande appli", g_anim_ouverture),
+        b!(17, "Section survolée qui glisse", g_survol),
     ]
 }
 
-pub struct IleSettings {
-    pub hwnd: HWND,
-    pub tab: usize,
-    pub scroll: usize,
-    pub hits: Vec<(f32, f32, f32, f32, SAct)>,
-    pub pm: Option<Pixmap>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum SAct {
-    Tab(usize),
-    Toggle(usize),
-    Dec(usize),
-    Inc(usize),
-    Reset,
-}
-
-pub const W: f32 = 820.0;
-pub const H: f32 = 640.0;
-const ROW: f32 = 44.0;
-const TOP: f32 = 76.0;
-
-fn val_txt(o: &Opt, c: &mut IleCfg) -> String {
+pub fn val_txt(o: &Opt, c: &mut IleCfg) -> String {
     match &o.k {
         K::B(f) => if *f(c) { "Oui".into() } else { "Non".into() },
         K::N(f, _, _, step, unit) => {
             let v = *f(c);
             match *unit {
                 "%" => format!("{} %", (v * 100.0).round()),
+                "h" => {
+                    let m = (v * 60.0).round() as i32;
+                    if m % 60 == 0 { format!("{} h", m / 60) } else { format!("{} h {:02}", m / 60, m % 60) }
+                }
                 u if *step < 1.0 => format!("{v:.1} {u}"),
                 u => format!("{} {u}", v.round()),
             }
@@ -322,108 +334,6 @@ pub fn reset_tab(tab: usize, c: &mut IleCfg) {
             K::B(f) => *f(c) = *f(&mut d),
             K::N(f, ..) => *f(c) = *f(&mut d),
             K::C(f, _) => *f(c) = *f(&mut d),
-        }
-    }
-}
-
-/// Dessine la fenêtre (taille logique W × H, à l'échelle `s`).
-pub fn draw(st: &mut IleSettings, c: &mut IleCfg, fonts: &Fonts, accent: [u8; 3], s: f32) {
-    let Some(mut pm) = Pixmap::new((W * s) as u32, (H * s) as u32) else { return };
-    let th = Theme::new(true, accent, 1.0);
-    let p = &PRESETS[c.preset.min(PRESETS.len() - 1)];
-    pm.fill(tiny_skia::Color::from_rgba8(18, 18, 22, 255));
-    let mut hits = Vec::new();
-    let list = opts();
-    let count = list.len();
-    {
-        let mut x = Ctx::new(&mut pm, fonts, &th, s, 0.0, 0.0);
-        let t = x.t;
-        // colonne des onglets
-        x.grad_rr(0.0, 0.0, 220.0, H, 0.0, Rgba::from(p.c0).a(0.9), Rgba::from(p.c1).a(0.9));
-        x.text(Wt::Semibold, 20.0, 22.0, 42.0, WHITE, "Réglages de l'île");
-        x.text(Wt::Regular, 12.0, 22.0, 62.0, WHITE.a(0.6), &format!("{count} options, enregistrées tout de suite"));
-        for (i, name) in TABS.iter().enumerate() {
-            let y = 80.0 + i as f32 * 36.0;
-            if i == st.tab {
-                x.rr(12.0, y, 196.0, 32.0, 10.0, WHITE.a(0.16));
-            }
-            let n = list.iter().filter(|o| o.tab == i).count();
-            x.text(Wt::Semibold, 13.5, 26.0, y + 21.0, if i == st.tab { WHITE } else { WHITE.a(0.75) }, name);
-            x.text_r(Wt::Regular, 11.5, 196.0, y + 21.0, WHITE.a(0.45), &n.to_string());
-            hits.push((12.0 * s, y * s, 196.0 * s, 32.0 * s, SAct::Tab(i)));
-        }
-        // contenu
-        let x0 = 250.0;
-        let xr = W - 28.0;
-        x.text(Wt::Semibold, 22.0, x0, 46.0, t.fg, TABS[st.tab]);
-        let rw = x.measure(Wt::Semibold, 12.0, "Réinitialiser l'onglet") + 22.0;
-        x.rr(xr - rw, 26.0, rw, 26.0, 13.0, t.fg.a(0.1));
-        x.text(Wt::Semibold, 12.0, xr - rw + 11.0, 43.5, t.fg2, "Réinitialiser l'onglet");
-        hits.push(((xr - rw) * s, 26.0 * s, rw * s, 26.0 * s, SAct::Reset));
-        let rows: Vec<usize> = (0..list.len()).filter(|i| list[*i].tab == st.tab).collect();
-        let fit = ((H - TOP - 40.0) / ROW).floor() as usize;
-        st.scroll = st.scroll.min(rows.len().saturating_sub(fit));
-        for (k, &i) in rows.iter().skip(st.scroll).take(fit).enumerate() {
-            let o = &list[i];
-            let y = TOP + k as f32 * ROW;
-            x.rr(x0 - 10.0, y, xr - x0 + 10.0, ROW - 6.0, 12.0, t.fg.a(0.05));
-            let sub = o.label.starts_with("  ");
-            x.text(Wt::Regular, 14.0, x0 + if sub { 16.0 } else { 4.0 }, y + 24.0, if sub { t.fg2 } else { t.fg }, o.label.trim());
-            match &o.k {
-                K::B(f) => {
-                    let on = *f(c);
-                    let (sx, sy) = (xr - 56.0, y + 8.0);
-                    x.rr(sx, sy, 42.0, 22.0, 11.0, if on { t.accent } else { t.track });
-                    x.circle(if on { sx + 31.0 } else { sx + 11.0 }, sy + 11.0, 9.0, WHITE);
-                    hits.push(((x0 - 10.0) * s, y * s, (xr - x0 + 10.0) * s, (ROW - 6.0) * s, SAct::Toggle(i)));
-                }
-                _ => {
-                    let v = val_txt(o, c);
-                    let vw = x.measure(Wt::Semibold, 13.5, &v).max(60.0);
-                    let cx = xr - 40.0 - vw / 2.0;
-                    x.text_c(Wt::Semibold, 13.5, cx, y + 24.0, t.fg, &v);
-                    let (lx, rx) = (cx - vw / 2.0 - 18.0, xr - 16.0);
-                    x.circle(lx, y + 19.0, 12.0, t.fg.a(0.1));
-                    x.chevron(lx, y + 19.0, 5.0, true, t.fg);
-                    x.circle(rx, y + 19.0, 12.0, t.fg.a(0.1));
-                    x.chevron(rx, y + 19.0, 5.0, false, t.fg);
-                    hits.push(((lx - 14.0) * s, y * s, 28.0 * s, (ROW - 6.0) * s, SAct::Dec(i)));
-                    hits.push(((rx - 14.0) * s, y * s, 28.0 * s, (ROW - 6.0) * s, SAct::Inc(i)));
-                    hits.push(((x0 - 10.0) * s, y * s, (lx - x0 - 4.0) * s, (ROW - 6.0) * s, SAct::Inc(i)));
-                }
-            }
-        }
-        if rows.len() > fit {
-            x.text_c(Wt::Regular, 12.0, (x0 + xr) / 2.0, H - 16.0, t.fg3, "Molette pour voir la suite");
-        }
-        x.text(Wt::Regular, 11.5, 22.0, H - 18.0, WHITE.a(0.5), "Clic droit sur une ligne : valeur précédente");
-    }
-    st.hits = hits;
-    st.pm = Some(pm);
-}
-
-pub fn hit(st: &IleSettings, x: f32, y: f32) -> Option<SAct> {
-    // les zones ajoutées en dernier (flèches) passent avant la ligne entière
-    st.hits.iter().rev().find(|h| x >= h.0 && x < h.0 + h.2 && y >= h.1 && y < h.1 + h.3).map(|h| h.4)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn beaucoup_d_options_et_toutes_modifiables() {
-        let l = opts();
-        assert!(l.len() >= 60, "{} options seulement", l.len());
-        let mut c = IleCfg::default();
-        for o in &l {
-            change(o, &mut c, 1);
-            change(o, &mut c, -1);
-            let _ = val_txt(o, &mut c);
-        }
-        for t in 0..TABS.len() {
-            assert!(l.iter().any(|o| o.tab == t), "onglet vide : {}", TABS[t]);
-            reset_tab(t, &mut c);
         }
     }
 }

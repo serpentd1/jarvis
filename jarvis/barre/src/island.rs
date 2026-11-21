@@ -127,6 +127,15 @@ pub const N_PAI_RESET: u8 = 41;
 pub const N_SONS: u8 = 42;
 pub const N_SONS_VOL: u8 = 43;
 pub const N_EFFETS: u8 = 44;
+/// Grande application › Paramètres : page choisie, option de l'île (n° × 4 + bouton), ligne de
+/// settings.rs (voir reglages::code_par), section montrée / cachée, montée, descendue, page réinitialisée.
+pub const N_REG_PAGE: u8 = 45;
+pub const N_REG_ILE: u8 = 46;
+pub const N_REG_PAR: u8 = 47;
+pub const N_REG_SEC: u8 = 48;
+pub const N_REG_UP: u8 = 49;
+pub const N_REG_DOWN: u8 = 50;
+pub const N_REG_RESET: u8 = 51;
 
 /// Ce que vise le champ de saisie de l'île.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -155,6 +164,8 @@ pub enum InputFor {
     Setting(usize),
     /// PAI : heures de cours d'un jour (0 = lundi … 5 = samedi), 6 = matières où il ne va pas.
     Pai(usize),
+    /// Réglage texte des Paramètres (ville, clé d'API, Discord…).
+    Param(crate::settings::F),
 }
 
 impl InputFor {
@@ -194,6 +205,7 @@ impl InputFor {
             InputFor::Relation => 12,
             InputFor::Pin => 13,
             InputFor::Pai(_) => 16,
+            InputFor::Param(_) => 17,
             InputFor::MemSearch => 14,
             InputFor::MemRename => 15,
         }
@@ -459,7 +471,6 @@ pub fn tabs(c: &IleCfg) -> Vec<Tab> {
         (c.t_memory, c.ot_memory, Tab::Memory),
         (c.t_pc, c.ot_pc, Tab::Pc),
         (c.t_batteries, c.ot_batteries, Tab::Batteries),
-        (c.t_jsettings, c.ot_jsettings, Tab::JSettings),
     ]
     .into_iter()
     .enumerate()
@@ -879,6 +890,8 @@ pub struct Island {
     pub input_for: InputFor,
     /// Grande île ouverte à la demande (/ouvrir) : se ferme avec Échap ou un clic en dehors.
     pub big_force: bool,
+    /// Début de l'animation de page de la grande appli (`true` = à l'ouverture).
+    pub page_t: Option<(Instant, bool)>,
     pub input: String,
     pub hidden: bool,
     pub toast: Option<(INotif, Instant)>,
@@ -921,6 +934,7 @@ impl Island {
             typing: false,
             input_for: InputFor::Chat,
             big_force: false,
+            page_t: None,
             input: String::new(),
             hidden: false,
             toast: None,

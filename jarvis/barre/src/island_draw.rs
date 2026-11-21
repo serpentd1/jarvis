@@ -87,6 +87,8 @@ pub struct R<'a> {
     pub sh: i32,
     /// Message d'état (connexion Pronote, Google…).
     pub status: &'a str,
+    /// Comptes, Pronote et IA pour la grande appli › Paramètres (seulement quand une page en a besoin).
+    pub info: Option<&'a crate::settings::Info>,
 }
 
 impl R<'_> {
@@ -117,7 +119,22 @@ pub fn hsv(h: f32, s: f32, v: f32) -> Rgba {
 }
 
 pub(crate) fn preset(c: &IleCfg) -> &'static Preset {
-    &PRESETS[c.preset.min(PRESETS.len() - 1)]
+    let p = &PRESETS[c.preset.min(PRESETS.len() - 1)];
+    // « Clair le jour, sombre la nuit » : thème clair le jour, « Nuit » le soir
+    if c.g_auto_theme {
+        let n = chrono::Local::now();
+        let h = n.hour() as f32 + n.minute() as f32 / 60.0;
+        let jour = h >= c.g_jour && h < c.g_nuit;
+        if jour && !p.light {
+            if let Some(q) = PRESETS.iter().find(|q| q.light) {
+                return q;
+            }
+        }
+        if !jour && p.light {
+            return &PRESETS[0];
+        }
+    }
+    p
 }
 
 pub(crate) fn accent(r: &R) -> Rgba {
@@ -135,7 +152,10 @@ pub(crate) fn accent(r: &R) -> Rgba {
 pub(crate) fn theme(r: &R) -> Theme {
     let a = accent(r);
     let f = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as u8;
-    Theme::new(!preset(r.c()).light, [f(a.0), f(a.1), f(a.2)], 0.4)
+    let c = r.c();
+    // fonds sombres de la grande appli : texte clair même avec un thème clair
+    let sombre = !preset(c).light || (crate::island_big::is_big(r) && matches!(c.g_fond, 1 | 3 | 4 | 5 | 6));
+    Theme::new(sombre, [f(a.0), f(a.1), f(a.2)], 0.4)
 }
 
 // ---------- Géométrie ----------
@@ -144,8 +164,8 @@ pub(crate) fn scale(r: &R) -> f32 {
     let (mw, _) = main_size(r.c());
     let mut k = (r.dpi * r.c().size).min(r.sw as f32 * 0.97 / mw.max(780.0));
     if crate::island_big::is_big(r) {
-        use crate::island_big::{BIG_H, BIG_W};
-        k = k.min(r.sw as f32 * 0.96 / BIG_W).min(r.sh as f32 * 0.92 / BIG_H);
+        let (bw, bh) = crate::island_big::big_size(r.c());
+        k = k.min(r.sw as f32 * 0.96 / bw).min(r.sh as f32 * 0.92 / bh);
     }
     k.max(0.4)
 }
@@ -162,7 +182,7 @@ pub fn target(r: &R) -> (Mode, f32, f32) {
         Mode::Toast => (440.0, 68.0),
         Mode::Jarvis => (470.0, 64.0),
         Mode::Ring => (470.0, 118.0),
-        Mode::Main | Mode::View if crate::island_big::is_big(r) => (crate::island_big::BIG_W, crate::island_big::BIG_H),
+        Mode::Main | Mode::View if crate::island_big::is_big(r) => crate::island_big::big_size(c),
         Mode::Main | Mode::View if c.layout == 0 => (CARDS_W, CARDS_H),
         Mode::Main => main_size(c),
         Mode::View => (main_size(c).0.max(800.0), 350.0),
@@ -182,6 +202,9 @@ pub fn fx_interval(r: &R) -> Option<u32> {
     let c = r.c();
     let (mode, _, _) = target(r);
     let open = matches!(mode, Mode::Main | Mode::View);
+    if open && crate::island_big::anim_page(r).is_some() {
+        return Some(16);
+    }
     let anim = c.rainbow
         || c.disco
         || c.pet > 0
@@ -444,9 +467,15 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
     let wy = -((sl * sl * (3.0 - 2.0 * sl)) * wh).round() as i32;
     // presque transparent mais pas tout à fait : la zone autour de la pilule capte la souris
     pm.fill(Color::from_rgba8(0, 0, 0, 1));
-    let th_ = theme(r);
+    let big = crate::island_big::is_big(r) && matches!(mode, Mode::Main | Mode::View);
+    let mut th_ = theme(r);
+    if big && c.g_contraste {
+        th_.fg2 = th_.fg.a(0.9);
+        th_.fg3 = th_.fg.a(0.74);
+        th_.sep = th_.fg.a(0.24);
+    }
     let p = preset(c);
-    let rad = c.radius.min(gh / 2.0) * s;
+    let rad = if big && c.g_arrondi > 0.0 { c.g_arrondi } else { c.radius }.min(gh / 2.0) * s;
     let (px, py, pw, ph) = (m * s, top * s, gw * s, gh * s);
     let path = gfx::rrect(px, py, pw, ph, rad, true)?;
     // ombre et lueur : quelques contours de plus en plus transparents (rapide, pas de flou)
@@ -474,7 +503,8 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
         pm.fill_path(&path, &pt, FillRule::Winding, Transform::identity(), None);
     }
     // verre : fond d'écran flouté derrière
-    if c.blur {
+    let flou = if big { match c.g_flou { 1 => true, 2 => false, _ => c.blur } } else { c.blur };
+    if flou {
         if let Some(b) = r.backdrop {
             let tr = Transform::from_scale(b.scale, b.scale).post_translate(-(wx as f32), -(wy as f32));
             let mut pt = Paint::default();
@@ -483,21 +513,51 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
             pm.fill_path(&path, &pt, FillRule::Winding, Transform::identity(), None);
         }
     }
-    let op = c.opacity.clamp(0.15, 1.0);
-    let (c0, c1) = (Rgba::from(p.c0).a(op), Rgba::from(p.c1).a(op));
-    if c.gradient {
+    let mut op = c.opacity.clamp(0.15, 1.0);
+    if big {
+        op = (op * (1.0 - c.g_transp.clamp(0.0, 0.8))).max(0.08);
+    }
+    let (mut c0, mut c1) = (Rgba::from(p.c0).a(op), Rgba::from(p.c1).a(op));
+    let mut degrade = c.gradient;
+    if big && c.g_fond > 0 {
+        let mix = |a: Rgba, b: Rgba, k: f32| Rgba(a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k, a.2 + (b.2 - a.2) * k, op);
+        let noir = Rgba(0.0, 0.0, 0.0, 1.0);
+        let (a0, a1) = (Rgba::from(p.c0), Rgba::from(p.c1));
+        match c.g_fond {
+            1 => (c0, c1) = (mix(a0, noir, 0.45), mix(a1, noir, 0.45)),
+            2 => (c0, c1) = (mix(a0, WHITE, 0.22), mix(a1, WHITE, 0.22)),
+            3 => {
+                (c0, c1) = (mix(accent(r), noir, 0.55), mix(a1, noir, 0.25));
+                degrade = true;
+            }
+            4 => (c0, c1) = (Rgba(0.03, 0.03, 0.04, op), Rgba(0.03, 0.03, 0.04, op)),
+            5 => {
+                (c0, c1) = (Rgba(0.05, 0.08, 0.18, op), Rgba(0.10, 0.07, 0.24, op));
+                degrade = true;
+            }
+            _ => {
+                (c0, c1) = (Rgba(0.16, 0.06, 0.26, op), Rgba(0.30, 0.10, 0.36, op));
+                degrade = true;
+            }
+        }
+    }
+    if degrade {
         gfx::grad_fill(&mut pm, &path, px, px + pw, c0, c1);
     } else {
         gfx::fill(&mut pm, &path, c0);
     }
     // reflet en haut (effet verre)
-    if c.blur || op < 0.95 {
+    if flou || op < 0.95 {
         if let Some(hp) = gfx::rrect(px + rad * 0.6, py + 1.0 * s, pw - rad * 1.2, 1.2 * s, 0.6 * s, false) {
             gfx::fill(&mut pm, &hp, WHITE.a(if p.light { 0.5 } else { 0.14 }));
         }
     }
     if c.rainbow {
         rainbow_border(&mut pm, px, py, pw, ph, rad, r.t(), s);
+    } else if big && c.g_bord {
+        if let Some(bp) = gfx::rrect(px + 0.75, py + 0.75, pw - 1.5, ph - 1.5, (rad - 0.75).max(0.0), true) {
+            gfx::stroke(&mut pm, &bp, accent(r).a(0.75), 1.5 * s);
+        }
     } else if c.border {
         if let Some(bp) = gfx::rrect(px + 0.5, py + 0.5, pw - 1.0, ph - 1.0, (rad - 0.5).max(0.0), true) {
             gfx::stroke(&mut pm, &bp, if p.light { Rgba(0.0, 0.0, 0.0, 0.10) } else { WHITE.a(0.13) }, 1.0);
@@ -513,7 +573,7 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
         let ox = px + (gw - tw) / 2.0 * s;
         {
             let mut cx = Ctx::new(&mut layer, r.fonts, &th_, s, ox, py);
-            cx.tf = c.text_size.clamp(0.7, 1.4);
+            cx.tf = c.text_size.clamp(0.7, 1.4) * if big { c.g_texte.clamp(0.8, 1.4) } else { 1.0 };
             cx.bold = c.bold;
             match mode {
                 Mode::Pill => pill(&mut cx, r, tw, th),

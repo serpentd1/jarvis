@@ -9,7 +9,7 @@ use crate::backdrop::{self, Backdrop};
 use crate::config::Config;
 use crate::data::{self, Data};
 use crate::gfx::{Fonts, Theme};
-use crate::settings::{self, Settings};
+use crate::settings;
 use crate::sys;
 use crate::widgets::{self, Look};
 
@@ -46,7 +46,7 @@ pub fn run(out: &str) {
     let now = chrono::Local::now().naive_local();
     for (name, dark) in [("sombre", true), ("clair", false)] {
         let theme = Theme::new(dark, cfg.accent, cfg.opacity);
-        let look = Look { cfg: &cfg, fonts: &fonts, theme: &theme, backdrop: Some(&bd), dpi, edit: false, sel: None };
+        let look = Look { cfg: &cfg, fonts: &fonts, theme: &theme, backdrop: Some(&bd), dpi, sel: None, edit: false };
         let full = backdrop::compose(sw as u32, sh as u32, sw as u32);
         let Some(mut desk) = IntSize::from_wh(sw as u32, sh as u32).and_then(|s| Pixmap::from_vec(full, s)) else {
             continue;
@@ -68,16 +68,6 @@ pub fn run(out: &str) {
             let _ = crop.save_png(out.join(format!("zoom_{name}.png")));
         }
         let _ = desk.save_png(out.join(format!("bureau_{name}.png")));
-    }
-    let theme = Theme::new(true, cfg.accent, cfg.opacity);
-    let pn = settings::PnInfo { connected: false, ..Default::default() };
-    let info = settings::Info { pn, ia: crate::ia::vue(), edit: false, mem: sys::mem_text(), status: String::new(), acc: Default::default(), discord: String::new(), winnotif: String::new() };
-    for page in 0..5 {
-        let mut st = Settings::new(std::ptr::null_mut());
-        st.set_page(page);
-        if let Some(pm) = settings::draw(&mut st, &cfg, &fonts, &theme, dpi, &info) {
-            let _ = pm.save_png(out.join(format!("parametres_{page}.png")));
-        }
     }
     log.push_str(&format!("{}\n", sys::mem_text()));
     let _ = std::fs::write(out.join("log.txt"), log);
@@ -204,6 +194,7 @@ pub fn run_ile(out: &str) {
         }
     }
     let ui = std::cell::RefCell::new(crate::island_big::BigUi::default());
+    let pinfo = settings::Info { pn: Default::default(), ia: crate::ia::vue(), mem: String::new(), acc: Default::default(), discord: String::new(), winnotif: String::new() };
     let mail_ai = island::MailAi { n: Some(0), question: "Fais-moi un résumé de ce mail.".into(), answer: "Le collège te demande de rendre l'autorisation signée pour la sortie au musée avant lundi 8 h. Pense à la faire signer ce week-end.".into(), asking: false };
     let clips: Vec<String> = vec!["Exercice 4 p. 52".into(), "https://www.youtube.com/watch?v=exemple".into(), "rdv 14h30 dentiste".into()];
     let shot = |d: &Data, name: &str, cfg: &Config, st: &Island, ring: Option<&Ring>, jarvis: &Jarvis, log: &mut String| {
@@ -233,6 +224,7 @@ pub fn run_ile(out: &str) {
             ui: &ui,
             sh,
             status: "",
+            info: Some(&pinfo),
         };
         let t0 = Instant::now();
         let (mode, _, _) = island_draw::target(&r);
@@ -410,15 +402,25 @@ pub fn run_ile(out: &str) {
     shot(&d, "26_mail_saisie", &cfg, &mv2, None, &jarvis_on, &mut log);
     let _ = Mode::Pill;
     let _ = island::fmt_dur(0.0);
-    // fenêtre des réglages : un onglet par image
-    let mut c3 = cfg.ile.clone();
-    for tab in 0..crate::ile_settings::TABS.len() {
-        let mut st = crate::ile_settings::IleSettings { hwnd: std::ptr::null_mut(), tab, scroll: 0, hits: Vec::new(), pm: None };
-        crate::ile_settings::draw(&mut st, &mut c3, &fonts, cfg.accent, dpi);
-        if let Some(pm) = &st.pm {
-            let _ = pm.save_png(out.join(format!("reglages_{tab:02}.png")));
-        }
+    // grande appli › Paramètres : une page par image
+    for p in 0..crate::reglages::PAGES.len() {
+        ui.borrow_mut().reg_page = p;
+        shot(&d, &format!("reglages_{p:02}"), &big2, &mk(true, View::JSettings), None, &jarvis_idle, &mut log);
     }
+    let mut big3 = big2.clone();
+    big3.ile.g_fond = 5;
+    big3.ile.g_couleurs = true;
+    big3.ile.g_selection = 3;
+    big3.ile.g_heure = true;
+    big3.ile.g_fond_colonne = true;
+    big3.ile.g_texte = 1.15;
+    big3.ile.g_cachees = vec![5, 6, 10];
+    shot(&d, "reglages_style", &big3, &mk(true, View::Tasks), None, &jarvis_idle, &mut log);
+    let mut big4 = big2.clone();
+    big4.ile.g_reduite = true;
+    big4.ile.g_largeur = 0.85;
+    big4.ile.g_selection = 1;
+    shot(&d, "reglages_reduite", &big4, &mk(true, View::Today), None, &jarvis_idle, &mut log);
     log.push_str(&format!("{} options dans les réglages\n", crate::ile_settings::opts().len()));
     let _ = std::fs::write(out.join("log.txt"), log);
 }

@@ -15,6 +15,7 @@ mod extra;
 mod gfx;
 mod ia;
 mod ile_settings;
+mod reglages;
 mod island;
 mod island_cards;
 mod island_big;
@@ -40,7 +41,6 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{Local, NaiveDate, NaiveTime, Timelike};
 use windows_sys::Win32::Foundation::*;
-use windows_sys::Win32::Graphics::Dwm::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId};
@@ -56,15 +56,13 @@ use data::{Data, Job, Msg};
 use extra::{DCmd, MCmd};
 use pronote::PJob;
 use gfx::{Fonts, Theme};
-use settings::{F, Settings};
+use settings::F;
 use sys::wide;
 use widgets::{Action, Hit, Kind, Look};
 
 const MAIN_CLASS: &str = "JarvisBarreMain";
 const WIDGET_CLASS: &str = "JarvisBarreWidget";
-const SETTINGS_CLASS: &str = "JarvisBarreSettings";
 const ILE_CLASS: &str = "JarvisBarreIle";
-const ILE_SET_CLASS: &str = "JarvisBarreIleSettings";
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
 const WM_APP_SHOW: u32 = WM_APP + 3;
@@ -119,7 +117,6 @@ pub struct App {
     dpi: f32,
     jobs: Sender<Job>,
     rx: Receiver<Msg>,
-    settings: Option<Settings>,
     last_day: Option<NaiveDate>,
     last_block: Option<String>,
     /// Lien (+ recherche Outlook) ouvert quand on clique sur la dernière notification.
@@ -137,7 +134,6 @@ pub struct App {
     /// Dynamic Island (mode « barre en haut de l'écran »).
     ile: Option<island::Island>,
     ile_fonts: Option<(usize, Fonts)>,
-    ile_set_win: Option<ile_settings::IleSettings>,
     ile_last_act: Option<Action>,
     ile_last_mode: island::Mode,
     fx_cur: Option<u32>,
@@ -263,7 +259,7 @@ impl App {
     }
 
     fn ensure_backdrop(&mut self) {
-        let ile = self.cfg.ile.on && self.cfg.ile.blur;
+        let ile = self.cfg.ile.on && (self.cfg.ile.blur || self.cfg.ile.g_flou == 1);
         if !(self.cfg.blur || self.cfg.accent_auto || ile) {
             self.backdrop = None;
             return;
@@ -324,7 +320,7 @@ impl App {
 
     /// Souris sur l'île : on redessine seulement quand le bouton survolé change (lueur).
     fn ile_survol(&mut self, x: i32, y: i32) {
-        let effets = self.cfg.ile.effets;
+        let effets = self.cfg.ile.effets || self.cfg.ile.g_survol;
         let Some(st) = &mut self.ile else { return };
         let (fx, fy) = (x as f32, y as f32);
         let avant = st.survol;
@@ -712,12 +708,18 @@ impl App {
         }
     }
 
+    /// Ancienne page de « Paramètres… » : ouvre la grande appli › Paramètres sur la même page.
     fn open_settings_at(&mut self, page: usize) {
-        self.open_settings();
-        if let Some(st) = &mut self.settings {
-            st.set_page(page);
+        self.open_reglages(reglages::page_de_parametres(page));
+    }
+
+    /// Ouvre la grande appli sur une page des Paramètres (n° dans reglages::PAGES).
+    fn open_reglages(&mut self, page: usize) {
+        self.ui.reg_page = page.min(reglages::PAGES.len() - 1);
+        if let Some(st) = &mut self.ile {
+            st.scroll = 0;
         }
-        self.refresh_settings();
+        self.big_open("parametres");
     }
 
     fn save_soon(&self) {
@@ -726,9 +728,15 @@ impl App {
 
     // ---------- Paramètres ----------
 
+    /// Un réglage a changé : on redessine la grande appli si elle montre les Paramètres.
     fn refresh_settings(&mut self) {
-        let Some(mut st) = self.settings.take() else { return };
-        let t = self.theme();
+        if self.ile.as_ref().is_some_and(|s| s.view == island::View::JSettings) {
+            self.ile_render();
+        }
+    }
+
+    /// État des comptes, de Pronote et de l'IA, pour les pages Comptes, IA… des Paramètres.
+    fn settings_info(&self) -> settings::Info {
         let p = &self.data.pronote;
         let pn = settings::PnInfo {
             connected: p.connected,
@@ -742,67 +750,68 @@ impl App {
             },
             qr: !self.cfg.pn_qr.is_empty(),
         };
-        let info = settings::Info {
+        settings::Info {
             pn,
-            edit: self.edit,
             mem: sys::mem_text(),
-            status: self.status.clone(),
             acc: self.data.accounts.clone(),
             discord: self.data.discord_state.clone(),
             winnotif: self.data.winnotif_state.clone(),
             ia: crate::ia::vue(),
-        };
-        if let Some(pm) = settings::draw(&mut st, &self.cfg, &self.fonts, &t, self.dpi, &info) {
-            settings::store(&mut st, &pm);
         }
-        let h = st.hwnd;
-        self.settings = Some(st);
-        unsafe { InvalidateRect(h, null(), 0) };
     }
 
     fn open_settings(&mut self) {
-        unsafe {
-            if let Some(st) = &self.settings {
-                ShowWindow(st.hwnd, SW_RESTORE);
-                SetForegroundWindow(st.hwnd);
-                return;
+        self.open_reglages(0);
+    }
+
+    /// Bouton d'une ligne de settings.rs dans la grande appli › Paramètres.
+    fn reg_par(&mut self, code: u16) {
+        use settings::K;
+        let (page, idx, b) = reglages::decode_par(code);
+        let info = self.settings_info();
+        let Some((k, Some(f), _)) = settings::spec(page, &info).into_iter().nth(idx) else { return };
+        match k {
+            K::Toggle => {
+                let v = settings::get_b(&self.cfg, f);
+                settings::set_b(&mut self.cfg, f, !v);
+                self.apply(f);
             }
-            let (w, h) = ((settings::WIN_W * self.dpi).round() as i32, (settings::WIN_H * self.dpi).round() as i32);
-            let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-            let mut r = RECT { left: 0, top: 0, right: w, bottom: h };
-            AdjustWindowRectEx(&mut r, style, 0, 0);
-            let wa = sys::work_area();
-            let (ww, wh) = (r.right - r.left, r.bottom - r.top);
-            let (x, y) = (wa.left + (wa.right - wa.left - ww) / 2, wa.top + (wa.bottom - wa.top - wh) / 2);
-            let hwnd = CreateWindowExW(
-                0,
-                wide(SETTINGS_CLASS).as_ptr(),
-                wide("Jarvis — Paramètres").as_ptr(),
-                style,
-                x,
-                y,
-                ww,
-                wh,
-                null_mut(),
-                null_mut(),
-                GetModuleHandleW(null()),
-                null(),
-            );
-            if hwnd.is_null() {
-                return;
+            K::Slider(min, max, _, _) => {
+                let pas = (max - min) / 20.0;
+                let v = settings::get_f(&self.cfg, f) + if b == 0 { -pas } else { pas };
+                settings::set_f(&mut self.cfg, f, v.clamp(min, max));
+                self.apply(f);
             }
-            let dark = self.theme().dark;
-            let on: i32 = dark as i32;
-            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as _, &on as *const i32 as _, 4);
-            let cap: u32 = if dark { 0x0020_1E1E } else { 0x00F7_F2F2 };
-            DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR as _, &cap as *const u32 as _, 4);
-            SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, self.icon as isize);
-            SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, self.icon as isize);
-            self.settings = Some(Settings::new(hwnd));
-            self.refresh_settings();
-            ShowWindow(hwnd, SW_SHOW);
-            SetForegroundWindow(hwnd);
+            K::Seg(opts) => {
+                if b < opts.len() {
+                    settings::set_i(&mut self.cfg, f, b);
+                    self.apply(f);
+                }
+            }
+            K::Swatch => {
+                if let Some(col) = settings::ACCENTS.get(b) {
+                    self.cfg.accent = *col;
+                    self.cfg.accent_auto = false;
+                    self.apply(F::Accent);
+                }
+            }
+            K::Text(_) => {
+                let v = if matches!(f, F::IaCle | F::DcSecret | F::PnPin) { String::new() } else { settings::get_t(&self.cfg, f) };
+                self.start_typing(island::InputFor::Param(f), v);
+            }
+            K::Button(_) => self.apply(f),
+            K::Ia => {
+                if let F::IaOn(i) = f {
+                    self.apply(match b {
+                        1 => F::IaTop(i),
+                        2 => F::IaDel(i),
+                        _ => F::IaOn(i),
+                    });
+                }
+            }
+            _ => {}
         }
+        self.ile_render();
     }
 
     /// Applique un réglage modifié (aperçu en direct sur les widgets).
@@ -852,10 +861,6 @@ impl App {
             F::IaDel(i) => {
                 crate::ia::retirer(i as usize);
                 self.refresh_accounts();
-            }
-            F::IaCle => {
-                let texte = self.settings.as_ref().map(|s| s.texte.clone()).unwrap_or_default();
-                self.ia_cle(texte);
             }
             F::IaUrl | F::IaModele => {} // enregistré avec le texte (settings.rs)
             F::IaChercher => {
@@ -918,58 +923,6 @@ impl App {
             self.render_all();
         }
         self.save_soon();
-    }
-
-    fn with_settings<R>(&mut self, f: impl FnOnce(&mut Settings, &mut Config) -> R) -> Option<R> {
-        let mut st = self.settings.take()?;
-        let r = f(&mut st, &mut self.cfg);
-        self.settings = Some(st);
-        Some(r)
-    }
-
-    fn settings_down(&mut self, x: f32, y: f32) -> bool {
-        let dpi = self.dpi;
-        let Some(changed) = self.with_settings(|st, c| settings::down(st, c, x / dpi, y / dpi)) else { return false };
-        for f in changed {
-            self.apply(f);
-        }
-        self.refresh_settings();
-        self.settings.as_ref().map(|s| s.drag.is_some()).unwrap_or(false)
-    }
-
-    fn settings_move(&mut self, x: f32) {
-        let dpi = self.dpi;
-        if let Some(Some(f)) = self.with_settings(|st, c| settings::drag(st, c, x / dpi)) {
-            self.apply(f);
-            self.refresh_settings();
-        }
-    }
-
-    fn settings_up(&mut self) {
-        self.with_settings(|st, _| st.drag = None);
-    }
-
-    fn settings_wheel(&mut self, d: i16) {
-        self.with_settings(|st, _| settings::wheel(st, d));
-        self.refresh_settings();
-    }
-
-    fn settings_char(&mut self, ch: u32) {
-        // Ctrl+V sur la page Comptes (hors champ de texte) : coller le QR code Pronote
-        if ch == 22 && self.settings.as_ref().is_some_and(|s| s.page() == 3 && !s.has_focus()) {
-            self.paste_qr();
-            self.refresh_settings();
-            return;
-        }
-        if let Some(Some(f)) = self.with_settings(|st, c| settings::on_char(st, c, ch)) {
-            self.apply(f);
-        }
-        self.refresh_settings();
-    }
-
-    fn settings_key(&mut self, vk: u32) {
-        self.with_settings(|st, _| settings::on_key(st, vk));
-        self.refresh_settings();
     }
 
     // ---------- Souris sur les widgets ----------
@@ -1280,6 +1233,7 @@ impl App {
         let mut c = POINT { x: 0, y: 0 };
         unsafe { GetCursorPos(&mut c) };
         let (sw, _) = sys::screen_size();
+        let info = (st.view == island::View::JSettings && reglages::besoin_info(self.ui.reg_page)).then(|| self.settings_info());
         let r = island_draw::R {
             cfg: &self.cfg,
             fonts: self.ile_fonts.as_ref().map(|x| &x.1).unwrap_or(&self.fonts),
@@ -1305,6 +1259,7 @@ impl App {
             ui: &self.ui,
             sh: sys::screen_size().1,
             status: &self.status,
+            info: info.as_ref(),
         };
         Some(f(&r))
     }
@@ -1504,6 +1459,29 @@ impl App {
         let Some(st) = &mut self.ile else { return };
         if !st.want {
             st.want = true;
+            let c = &self.cfg.ile;
+            if c.grande == 1 || st.big_force {
+                if c.g_anim_ouverture {
+                    st.page_t = Some((std::time::Instant::now(), true));
+                }
+                if st.view == island::View::Main {
+                    use island::View;
+                    let v = match c.g_depart {
+                        1 => Some(View::Today),
+                        2 => self.ui.last_view,
+                        3 => Some(View::Chat),
+                        4 => Some(View::Tasks),
+                        5 => Some(View::School),
+                        6 => Some(View::JSettings),
+                        _ => None,
+                    };
+                    if let Some(v) = v {
+                        st.view = v;
+                        st.scroll = 0;
+                        self.jfetch_view(v);
+                    }
+                }
+            }
             if self.cfg.ile.open_sound {
                 sys::soft_sound(0);
             }
@@ -1562,6 +1540,9 @@ impl App {
         let peek = std::mem::take(&mut st.peek);
         if st.want {
             st.want = false;
+            if self.cfg.ile.grande == 1 {
+                self.ui.last_view = Some(st.view);
+            }
             st.view = island::View::Main;
             st.sel = None;
             st.scroll = 0;
@@ -1613,6 +1594,7 @@ impl App {
         if let Some(st) = &mut self.ile {
             if st.view != v {
                 st.scroll = 0;
+                st.page_t = Some((std::time::Instant::now(), false));
             }
             st.view = v;
             st.sel = sel;
@@ -2482,6 +2464,14 @@ impl App {
                 }
                 self.pai_change();
             }
+            island::InputFor::Param(f) => {
+                if f == F::IaCle {
+                    self.ia_cle(q.trim().to_string());
+                } else {
+                    settings::set_t(&mut self.cfg, f, q.trim().to_string());
+                    self.apply(f);
+                }
+            }
             island::InputFor::Setting(i) => {
                 if let Some(rg) = jarvis_data::arr(self.jd.get("parametres"), "reglages").get(i) {
                     let body = json!({"section": rg["section"], "cle": rg["cle"], "valeur": q});
@@ -2779,6 +2769,59 @@ impl App {
                     self.jact("parametres", json!({"cle": "voix", "valeur": next}));
                 }
             }
+            Action::IleN(N_REG_PAGE, i) => {
+                self.ui.reg_page = (i as usize).min(reglages::PAGES.len() - 1);
+                if let Some(st) = &mut self.ile {
+                    st.scroll = 0;
+                    st.typing = false;
+                    st.page_t = Some((std::time::Instant::now(), false));
+                }
+            }
+            Action::IleN(N_REG_ILE, code) => {
+                let list = ile_settings::opts();
+                let (i, b) = ((code / 4) as usize, code % 4);
+                if let Some(o) = list.get(i) {
+                    let old = self.cfg.ile.clone();
+                    ile_settings::change(o, &mut self.cfg.ile, if b == 1 { -1 } else { 1 });
+                    self.ile_cfg_changed(&old);
+                }
+            }
+            Action::IleN(N_REG_PAR, code) => self.reg_par(code),
+            Action::IleN(N_REG_SEC, i) => {
+                let old = self.cfg.ile.clone();
+                let c = &mut self.cfg.ile.g_cachees;
+                match c.iter().position(|x| *x == i as u8) {
+                    Some(k) => {
+                        c.remove(k);
+                    }
+                    None => c.push(i as u8),
+                }
+                self.ile_cfg_changed(&old);
+            }
+            Action::IleN(code @ (N_REG_UP | N_REG_DOWN), i) => {
+                let old = self.cfg.ile.clone();
+                let mut o: Vec<u8> = island_big::ordre(&self.cfg.ile).into_iter().map(|x| x as u8).collect();
+                if let Some(k) = o.iter().position(|x| *x == i as u8) {
+                    let j = if code == N_REG_UP { k.checked_sub(1) } else { (k + 1 < o.len()).then_some(k + 1) };
+                    if let Some(j) = j {
+                        o.swap(k, j);
+                    }
+                }
+                self.cfg.ile.g_ordre = o;
+                self.ile_cfg_changed(&old);
+            }
+            Action::IleN(N_REG_RESET, p) => {
+                let old = self.cfg.ile.clone();
+                let tabs = reglages::onglets(p as usize);
+                for t in &tabs {
+                    ile_settings::reset_tab(*t, &mut self.cfg.ile);
+                }
+                if tabs.contains(&14) {
+                    self.cfg.ile.g_cachees.clear();
+                    self.cfg.ile.g_ordre.clear();
+                }
+                self.ile_cfg_changed(&old);
+            }
             Action::IleN(N_SONS, _) => {
                 self.cfg.ile.sons = !self.cfg.ile.sons;
                 config::save(&self.cfg);
@@ -2881,6 +2924,9 @@ impl App {
         }
         let Some(st) = &mut self.ile else { return };
         st.big_force = true;
+        if self.cfg.ile.g_anim_ouverture {
+            st.page_t = Some((std::time::Instant::now(), true));
+        }
         st.peek = true;
         st.want = true;
         let hwnd = st.hwnd;
@@ -2909,6 +2955,7 @@ impl App {
         st.want = false;
         st.peek = false;
         st.typing = false;
+        self.ui.last_view = Some(st.view);
         st.view = island::View::Main;
         let hwnd = st.hwnd;
         unsafe {
@@ -3457,52 +3504,13 @@ impl App {
 
     // ---------- Réglages de l'île ----------
 
+    /// Ancienne fenêtre « Réglages de l'île… » : ouvre la grande appli › Paramètres › Apparence.
     fn open_ile_settings(&mut self) {
-        unsafe {
-            if let Some(st) = &self.ile_set_win {
-                ShowWindow(st.hwnd, SW_RESTORE);
-                SetForegroundWindow(st.hwnd);
-                return;
-            }
-            let s = self.dpi;
-            let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-            let mut rc = RECT { left: 0, top: 0, right: (ile_settings::W * s) as i32, bottom: (ile_settings::H * s) as i32 };
-            AdjustWindowRectEx(&mut rc, style, 0, 0);
-            let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
-            let (sw, sh) = sys::screen_size();
-            let hwnd = CreateWindowExW(
-                0,
-                wide(ILE_SET_CLASS).as_ptr(),
-                wide("Jarvis — réglages de l'île").as_ptr(),
-                style,
-                (sw - w) / 2,
-                (sh - h) / 3,
-                w,
-                h,
-                null_mut(),
-                null_mut(),
-                GetModuleHandleW(null()),
-                null(),
-            );
-            if hwnd.is_null() {
-                return;
-            }
-            let dark: i32 = 1;
-            DwmSetWindowAttribute(hwnd, 20, &dark as *const i32 as _, 4);
-            self.ile_set_win = Some(ile_settings::IleSettings { hwnd, tab: 0, scroll: 0, hits: Vec::new(), pm: None });
-            self.ile_settings_draw();
-            ShowWindow(hwnd, SW_SHOW);
-            SetForegroundWindow(hwnd);
-        }
+        self.open_reglages(reglages::page_de_ile(0));
     }
 
     fn open_ile_settings_tab(&mut self, tab: usize) {
-        self.open_ile_settings();
-        if let Some(st) = &mut self.ile_set_win {
-            st.tab = tab;
-            st.scroll = 0;
-        }
-        self.ile_settings_draw();
+        self.open_reglages(reglages::page_de_ile(tab));
     }
 
     /// Nouveau texte dans le presse-papiers : gardé (10 derniers, en mémoire seulement).
@@ -3529,41 +3537,7 @@ impl App {
     }
 
     fn ile_settings_draw(&mut self) {
-        let Some(mut st) = self.ile_set_win.take() else { return };
-        let acc = self.cfg.accent;
-        let font = self.ile_fonts.as_ref().map(|x| &x.1).unwrap_or(&self.fonts);
-        ile_settings::draw(&mut st, &mut self.cfg.ile, font, acc, self.dpi);
-        let h = st.hwnd;
-        self.ile_set_win = Some(st);
-        unsafe { InvalidateRect(h, null(), 0) };
-    }
-
-    fn ile_settings_click(&mut self, x: f32, y: f32, dir: i32) {
-        let Some(st) = &mut self.ile_set_win else { return };
-        let Some(act) = ile_settings::hit(st, x, y) else { return };
-        let old = self.cfg.ile.clone();
-        let list = ile_settings::opts();
-        match act {
-            ile_settings::SAct::Tab(i) => {
-                st.tab = i;
-                st.scroll = 0;
-            }
-            ile_settings::SAct::Toggle(i) => ile_settings::change(&list[i], &mut self.cfg.ile, 1),
-            ile_settings::SAct::Dec(i) => ile_settings::change(&list[i], &mut self.cfg.ile, -1),
-            ile_settings::SAct::Inc(i) => ile_settings::change(&list[i], &mut self.cfg.ile, dir),
-            ile_settings::SAct::Reset => {
-                let t = st.tab;
-                ile_settings::reset_tab(t, &mut self.cfg.ile);
-            }
-        }
-        self.ile_cfg_changed(&old);
-        self.ile_settings_draw();
-    }
-
-    fn ile_settings_wheel(&mut self, d: i16) {
-        let Some(st) = &mut self.ile_set_win else { return };
-        st.scroll = if d < 0 { st.scroll + 2 } else { st.scroll.saturating_sub(2) };
-        self.ile_settings_draw();
+        self.refresh_settings();
     }
 
     /// Une option de l'île a changé : on applique ce qui doit l'être.
@@ -3572,7 +3546,7 @@ impl App {
         if c.font != old.font {
             self.ile_fonts = None;
         }
-        if c.blur != old.blur || (c.blur_amount - old.blur_amount).abs() > 0.001 {
+        if c.blur != old.blur || c.g_flou != old.g_flou || (c.blur_amount - old.blur_amount).abs() > 0.001 {
             self.ensure_backdrop();
         }
         self.api_port.store(if c.api_on { c.api_port.round() as u32 } else { 0 }, Ordering::Relaxed);
@@ -4023,12 +3997,6 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 if let Some(st) = &a.ile {
                     DestroyWindow(st.hwnd);
                 }
-                if let Some(st) = &a.ile_set_win {
-                    DestroyWindow(st.hwnd);
-                }
-                if let Some(st) = &a.settings {
-                    DestroyWindow(st.hwnd);
-                }
             });
             PostQuitMessage(0);
             return 0;
@@ -4205,129 +4173,6 @@ unsafe extern "system" fn ile_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     DefWindowProcW(hwnd, msg, wp, lp)
 }
 
-unsafe extern "system" fn ile_set_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let (x, y) = xy(lp);
-    let (x, y) = (x as f32, y as f32);
-    match msg {
-        WM_PAINT => {
-            let mut ps: PAINTSTRUCT = std::mem::zeroed();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            with_app(|a| {
-                if let Some(pm) = a.ile_set_win.as_ref().and_then(|s| s.pm.as_ref()) {
-                    let (w, h) = (pm.width() as i32, pm.height() as i32);
-                    let mut buf = vec![0u8; pm.data().len()];
-                    gfx::rgba_to_bgra(pm.data(), &mut buf);
-                    let bmi = gfx::bmi32(w, h);
-                    SetDIBitsToDevice(hdc, 0, 0, w as u32, h as u32, 0, 0, 0, h as u32, buf.as_ptr() as _, &bmi, DIB_RGB_COLORS);
-                }
-            });
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        WM_ERASEBKGND => return 1,
-        WM_LBUTTONDOWN => {
-            with_app(|a| a.ile_settings_click(x, y, 1));
-            return 0;
-        }
-        WM_RBUTTONDOWN => {
-            with_app(|a| a.ile_settings_click(x, y, -1));
-            return 0;
-        }
-        WM_MOUSEWHEEL => {
-            let d = ((wp >> 16) & 0xFFFF) as u16 as i16;
-            with_app(|a| a.ile_settings_wheel(d));
-            return 0;
-        }
-        WM_KEYDOWN => {
-            if wp as u32 == 0x1B {
-                DestroyWindow(hwnd);
-                return 0;
-            }
-        }
-        WM_DESTROY => {
-            with_app(|a| {
-                a.ile_set_win = None;
-                config::save(&a.cfg);
-                sys::trim_memory();
-            });
-            return 0;
-        }
-        _ => {}
-    }
-    DefWindowProcW(hwnd, msg, wp, lp)
-}
-
-unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let (x, y) = xy(lp);
-    let (x, y) = (x as f32, y as f32);
-    match msg {
-        WM_PAINT => {
-            let mut ps: PAINTSTRUCT = std::mem::zeroed();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            with_app(|a| {
-                if let Some(st) = &a.settings {
-                    settings::blit(st, hdc);
-                }
-            });
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        WM_ERASEBKGND => return 1,
-        WM_LBUTTONDOWN => {
-            if with_app(|a| a.settings_down(x, y)).unwrap_or(false) {
-                SetCapture(hwnd);
-            }
-            return 0;
-        }
-        WM_MOUSEMOVE => {
-            if wp & 1 != 0 {
-                with_app(|a| a.settings_move(x));
-            }
-            return 0;
-        }
-        WM_LBUTTONUP => {
-            ReleaseCapture();
-            with_app(|a| a.settings_up());
-            return 0;
-        }
-        WM_MOUSEWHEEL => {
-            let d = ((wp >> 16) & 0xFFFF) as u16 as i16;
-            with_app(|a| a.settings_wheel(d));
-            return 0;
-        }
-        WM_CHAR => {
-            with_app(|a| a.settings_char(wp as u32));
-            return 0;
-        }
-        WM_KEYDOWN => {
-            with_app(|a| a.settings_key(wp as u32));
-        }
-        WM_CLOSE => {
-            DestroyWindow(hwnd);
-            return 0;
-        }
-        WM_DESTROY => {
-            with_app(|a| {
-                if let Some(mut st) = a.settings.take() {
-                    if let Some(f) = settings::commit(&mut st, &mut a.cfg) {
-                        if f == F::IaCle {
-                            let texte = st.texte.clone();
-                            a.ia_cle(texte);
-                        } else {
-                            a.apply(f);
-                        }
-                    }
-                }
-                config::save(&a.cfg);
-                sys::trim_memory();
-            });
-            return 0;
-        }
-        _ => {}
-    }
-    DefWindowProcW(hwnd, msg, wp, lp)
-}
-
 /// Appelé par Windows quand une fenêtre s'ouvre, se ferme, se réduit… (aucune scrutation en boucle).
 unsafe extern "system" fn win_event(_h: HWINEVENTHOOK, ev: u32, hwnd: HWND, obj: i32, child: i32, _t: u32, _ms: u32) {
     if obj != 0 || child != 0 || hwnd.is_null() {
@@ -4437,9 +4282,7 @@ unsafe fn run(ile: Option<bool>) {
     };
     register(MAIN_CLASS, Some(main_proc), 0, icon);
     register(WIDGET_CLASS, Some(widget_proc), CS_DBLCLKS, icon);
-    register(SETTINGS_CLASS, Some(settings_proc), 0, icon);
     register(ILE_CLASS, Some(ile_proc), CS_DBLCLKS, icon);
-    register(ILE_SET_CLASS, Some(ile_set_proc), 0, icon);
     if let Some(on) = ile {
         cfg.ile.on = on;
     }
@@ -4512,7 +4355,6 @@ unsafe fn run(ile: Option<bool>) {
         dpi: sys::dpi(),
         jobs,
         rx,
-        settings: None,
         last_day: None,
         last_block: None,
         notif_link: None,
@@ -4528,7 +4370,6 @@ unsafe fn run(ile: Option<bool>) {
         sel_day: None,
         ile: None,
         ile_fonts: None,
-        ile_set_win: None,
         ile_last_act: None,
         ile_last_mode: island::Mode::Pill,
         fx_cur: None,
