@@ -9,7 +9,7 @@ use crate::gfx::{Rgba, WHITE, Wt};
 use crate::island::*;
 use crate::island_cards::{self, caps, icon, media_card, vgrad, weather_card};
 use crate::island_draw::*;
-use crate::jarvis_data::{arr, s};
+use crate::jarvis_data::{arr, mem_reason, mem_rows, s, MEM_FILTERS, MEM_SORTS};
 use crate::widgets::{self, Action, Ctx, GREEN, ORANGE, RED};
 
 pub const BIG_W: f32 = 1100.0;
@@ -17,7 +17,7 @@ pub const BIG_H: f32 = 720.0;
 const SIDEBAR: f32 = 212.0;
 
 /// Sections de la grande île, dans l'ordre de la barre.
-pub const SECTIONS: [(View, Tab, &str); 18] = [
+pub const SECTIONS: [(View, Tab, &str); 19] = [
     (View::Main, Tab::Home, "Accueil"),
     (View::Chat, Tab::Jarvis, "Jarvis"),
     (View::Tasks, Tab::Tasks, "Tâches"),
@@ -36,6 +36,7 @@ pub const SECTIONS: [(View, Tab, &str); 18] = [
     (View::Timers, Tab::Timers, "Minuteurs"),
     (View::JSettings, Tab::JSettings, "Paramètres"),
     (View::Accounts, Tab::Accounts, "Comptes"),
+    (View::History, Tab::History, "Historique"),
 ];
 
 /// État d'interface des sections (liste de tâches choisie, date du rappel, confirmation…).
@@ -52,6 +53,25 @@ pub struct BigUi {
     /// Lien en cours : souvenir de départ, puis d'arrivée.
     pub link_from: Option<String>,
     pub link_to: Option<String>,
+    /// Mémoire affichée en liste triable (sinon en carte).
+    pub mem_list: bool,
+    /// Filtre (n° dans MEM_FILTERS), ordre (n° dans MEM_SORTS) et recherche de la liste.
+    pub mem_filter: u8,
+    pub mem_sort: u8,
+    pub mem_search: String,
+    /// Souvenirs cochés dans la liste.
+    pub mem_checked: Vec<String>,
+    /// Souvenir en cours de renommage.
+    pub mem_edit: Option<String>,
+    /// Premier clic sur « Supprimer » : il faut confirmer dans les 5 s.
+    pub mem_confirm: Option<std::time::Instant>,
+}
+
+impl BigUi {
+    /// La suppression de la mémoire attend-elle sa confirmation ?
+    pub fn mem_confirming(&self) -> bool {
+        self.mem_confirm.is_some_and(|at| at.elapsed().as_secs() < 5)
+    }
 }
 
 impl Default for BigUi {
@@ -69,6 +89,13 @@ impl Default for BigUi {
             rt_etapes: Vec::new(),
             link_from: None,
             link_to: None,
+            mem_list: false,
+            mem_filter: 0,
+            mem_sort: 0,
+            mem_search: String::new(),
+            mem_checked: Vec::new(),
+            mem_edit: None,
+            mem_confirm: None,
         }
     }
 }
@@ -97,7 +124,7 @@ pub fn big_view(c: &mut Ctx, r: &R, w: f32, h: f32) {
         icon(c, tab, 32.0, y + 16.0, if on { t.fg } else { t.fg2 });
         c.text(Wt::Semibold, 13.0, 52.0, y + 21.0, if on { t.fg } else { t.fg2 }, name);
         c.hit(12.0, y, SIDEBAR - 20.0, 32.0, Action::IleN(N_SECTION, v as u16));
-        y += 35.0;
+        y += 33.0;      // 19 sections : elles tiennent au-dessus du bouton « Fermer »
     }
     if r.st.big_force {
         chip(c, 16.0, h - 36.0, "Fermer (Échap)", t.fg.a(0.12), t.fg2, Some(Action::Ile(A_BIG_CLOSE)));
@@ -134,6 +161,7 @@ pub fn section_page(c: &mut Ctx, r: &R, v: View, w: f32, h: f32) -> bool {
         View::Pc => pc_page(c, r, w, h),
         View::JSettings => jsettings_page(c, r, w, h),
         View::Accounts => accounts_page(c, r, w, h),
+        View::History => history_page(c, r, w, h),
         View::Phone if is_big(r) => big_phone(c, r, w, h),
         View::Mails if is_big(r) => tall(c, r, w, h, mails_page),
         View::Discord if is_big(r) => tall(c, r, w, h, discord_page),
@@ -548,6 +576,64 @@ pub fn copies_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
     }
 }
 
+// ---------- Historique des conversations ----------
+
+/// Les échanges avec Jarvis (le plus récent en haut) : ta phrase, puis sa réponse. Molette = remonter le temps.
+pub fn history_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
+    if absent(c, r, "historique") {
+        return;
+    }
+    let t = c.t;
+    let v = r.jd.get("historique");
+    let total = v.and_then(|v| v["total"].as_u64()).unwrap_or(0);
+    caps(c, SIDE, 22.0, t.fg2, &format!("Conversations avec Jarvis ({total})"));
+    if total > 0 {
+        chip(c, w - SIDE - 100.0, 6.0, "Tout effacer", t.fg.a(0.12), t.fg, Some(Action::Ile(A_HIST_CLEAR)));
+    }
+    let list = arr(v, "echanges");
+    if list.is_empty() {
+        c.text(Wt::Regular, 13.0, SIDE, 56.0, t.fg3, "Rien pour l'instant : parle à Jarvis, vos échanges s'afficheront ici.");
+        return;
+    }
+    let tw = w - 2.0 * SIDE - 16.0;
+    let mut y = 40.0;
+    let mut jour = String::new();
+    for x in list.iter().skip(r.st.scroll) {
+        let date = s(x, "date");
+        let (d, heure) = date.split_once(' ').unwrap_or((date, ""));
+        if d != jour {
+            if y + 24.0 > h {
+                break;
+            }
+            jour = d.to_string();
+            let titre = chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map(|n| n.format("%d/%m/%Y").to_string()).unwrap_or_else(|_| d.to_string());
+            c.text(Wt::Semibold, 12.0, SIDE, y + 14.0, t.accent, &titre);
+            y += 22.0;
+        }
+        let q = c.wrap(Wt::Semibold, 12.5, &format!("Toi : {}", s(x, "question").replace(['\r', '\n'], " ")), tw - 50.0);
+        let rep = c.wrap(Wt::Regular, 12.5, &format!("Jarvis : {}", s(x, "reponse").replace(['\r', '\n'], " ")), tw);
+        let (nq, nr) = (q.len().min(2), rep.len().min(3));
+        let bh = 14.0 + (nq + nr) as f32 * 16.0;
+        if y + bh > h {
+            break;
+        }
+        c.rr(SIDE - 6.0, y, w - 2.0 * SIDE + 12.0, bh, 10.0, t.fg.a(0.06));
+        c.text_r(Wt::Regular, 11.0, w - SIDE - 2.0, y + 17.0, t.fg3, heure);
+        let mut ly = y + 17.0;
+        for (k, l) in q.iter().take(nq).enumerate() {
+            let l = if k + 1 == nq && q.len() > nq { format!("{l}…") } else { l.clone() };
+            c.text(Wt::Semibold, 12.5, SIDE + 4.0, ly, t.fg, &l);
+            ly += 16.0;
+        }
+        for (k, l) in rep.iter().take(nr).enumerate() {
+            let l = if k + 1 == nr && rep.len() > nr { format!("{l}…") } else { l.clone() };
+            c.text(Wt::Regular, 12.5, SIDE + 4.0, ly, t.fg2, &l);
+            ly += 16.0;
+        }
+        y += bh + 6.0;
+    }
+}
+
 // ---------- Routines ----------
 
 pub fn routines_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
@@ -626,6 +712,10 @@ pub fn memory_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
     if absent(c, r, "memoire") {
         return;
     }
+    if r.ui.mem_list {
+        memory_list(c, r, w, h);
+        return;
+    }
     let t = c.t;
     let v = r.jd.get("memoire");
     let top = 4.0;
@@ -685,12 +775,16 @@ pub fn memory_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
         }
     }
     let nb = arr(v, "noeuds").len();
-    c.text(Wt::Regular, 11.0, ax + 10.0, ay + 18.0, t.fg3, &format!("{nb} souvenir{} · glisser = déplacer · molette = zoom", if nb > 1 { "s" } else { "" }));
+    let k = arr(v, "suggestions").len();
+    let a_trier = if k > 0 { format!(" · {k} à trier") } else { String::new() };
+    c.text(Wt::Regular, 11.0, ax + 10.0, ay + 18.0, t.fg3, &format!("{nb} souvenir{}{a_trier} · glisser = déplacer · molette = zoom", if nb > 1 { "s" } else { "" }));
     let by = h - 38.0;
     let mut fx = SIDE - 4.0;
+    fx += chip(c, fx, by + 4.0, "Trier la mémoire", t.accent.a(0.85), WHITE, Some(Action::Ile(A_MEM_MODE))) + 6.0;
     if let Some(sel) = &g.sel {
         if sel != "moi" {
-            fx += chip(c, fx, by + 4.0, "Supprimer", RED.a(0.3), t.fg, Some(Action::Ile(A_MEM_DEL))) + 6.0;
+            let (lab, bg) = if r.ui.mem_confirming() { ("Confirmer ?", RED) } else { ("Supprimer", RED.a(0.3)) };
+            fx += chip(c, fx, by + 4.0, lab, bg, t.fg, Some(Action::Ile(A_MEM_DEL))) + 6.0;
         }
         let lab = if r.ui.link_from.is_some() { "Annuler le lien" } else { "Relier" };
         fx += chip(c, fx, by + 4.0, lab, t.accent.a(0.3), t.fg, Some(Action::Ile(A_MEM_LINK))) + 6.0;
@@ -704,6 +798,133 @@ pub fn memory_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
     }
     fx += chip(c, fx, by + 4.0, "Recentrer", t.fg.a(0.1), t.fg2, Some(Action::Ile(A_MEM_CENTER))) + 6.0;
     field(c, r, fx, by, w - SIDE - fx + 4.0, InputFor::Memory, "Retenir un souvenir… (ex : Lucas est mon meilleur ami)");
+}
+
+/// Petite punaise « garder » : pleine si le souvenir est gardé.
+fn pin(c: &mut Ctx, cx: f32, cy: f32, on: bool) {
+    let t = c.t;
+    let col = if on { t.accent } else { t.fg3 };
+    c.line(cx, cy, cx, cy + 8.0, 1.6, col);
+    if on {
+        c.circle(cx, cy - 2.0, 5.0, col);
+    } else {
+        c.ring(cx, cy - 2.0, 4.5, col, 1.4);
+    }
+}
+
+/// Mémoire en liste : filtrer, chercher, trier, cocher, supprimer (avec confirmation), garder, renommer.
+fn memory_list(c: &mut Ctx, r: &R, w: f32, h: f32) {
+    let t = c.t;
+    let ui = r.ui;
+    let v = r.jd.get("memoire");
+    let rows = mem_rows(v, ui.mem_filter, ui.mem_sort, &ui.mem_search);
+    // barre d'outils : carte, filtre, ordre, recherche
+    let mut x = SIDE - 4.0;
+    x += chip(c, x, 8.0, "Carte", t.fg.a(0.12), t.fg, Some(Action::Ile(A_MEM_MODE))) + 6.0;
+    let filtre = format!("Filtre : {}", MEM_FILTERS[ui.mem_filter as usize % MEM_FILTERS.len()].0);
+    x += chip(c, x, 8.0, &filtre, if ui.mem_filter == 0 { t.fg.a(0.12) } else { t.accent.a(0.35) }, t.fg, Some(Action::Ile(A_MEM_FILTER))) + 6.0;
+    let tri = format!("Tri : {}", MEM_SORTS[ui.mem_sort as usize % MEM_SORTS.len()]);
+    x += chip(c, x, 8.0, &tri, t.fg.a(0.12), t.fg, Some(Action::Ile(A_MEM_SORT))) + 6.0;
+    let typing_search = r.st.typing && r.st.input_for == InputFor::MemSearch;
+    if !ui.mem_search.is_empty() && !typing_search {
+        let lab = format!("× « {} »", c.fit(Wt::Regular, 12.0, &ui.mem_search, 90.0));
+        x += chip(c, x, 8.0, &lab, t.accent.a(0.35), t.fg, Some(Action::Ile(A_MEM_SEARCH_CLEAR))) + 6.0;
+    }
+    field(c, r, x, 4.0, (w - SIDE - x + 4.0).max(120.0), InputFor::MemSearch, "Chercher un souvenir…");
+    // résumé + annulation
+    let nb = arr(v, "noeuds").len().saturating_sub(1);
+    let k = arr(v, "suggestions").len();
+    let info = format!("{} affiché{} sur {nb} · {k} à trier · {} coché{}", rows.len(), if rows.len() > 1 { "s" } else { "" }, ui.mem_checked.len(), if ui.mem_checked.len() > 1 { "s" } else { "" });
+    c.text(Wt::Regular, 12.0, SIDE, 58.0, t.fg2, &info);
+    if let Some(quand) = v.and_then(|v| v["sauvegarde"].as_str()) {
+        let lab = format!("Annuler le nettoyage ({quand})");
+        let lw = c.measure(Wt::Semibold, 12.0, &lab) + 24.0;
+        chip(c, w - SIDE - lw + 4.0, 42.0, &lab, ORANGE.a(0.3), t.fg, Some(Action::Ile(A_MEM_UNDO)));
+    }
+    // lignes
+    let bottom = h - 46.0 - if ui.msg.is_empty() { 0.0 } else { 20.0 };
+    let mut y = 72.0;
+    if rows.is_empty() {
+        let vide = if ui.mem_filter == 1 { "Rien à trier : ta mémoire est bien rangée." } else { "Aucun souvenir ici." };
+        c.text(Wt::Regular, 13.0, SIDE, y + 20.0, t.fg3, vide);
+    }
+    let rw = w - 2.0 * SIDE + 12.0;
+    for (i, n) in rows.iter().enumerate().skip(r.st.scroll) {
+        if y + 30.0 > bottom {
+            break;
+        }
+        let id = s(n, "id");
+        let on = ui.mem_checked.iter().any(|x| x == id);
+        let garde = n["garde"].as_bool() == Some(true);
+        c.rr(SIDE - 6.0, y, rw, 30.0, 9.0, if on { RED.a(0.14) } else { t.fg.a(0.05) });
+        c.hit(SIDE - 6.0, y, rw - 34.0, 30.0, Action::IleN(N_MEM_ROW, i as u16));
+        checkbox(c, SIDE + 8.0, y + 15.0, on);
+        c.circle(SIDE + 28.0, y + 15.0, 5.0, node_color(s(n, "type"), t));
+        let reason = mem_reason(v, id);
+        let rsw = if reason.is_empty() { 0.0 } else { (c.measure(Wt::Regular, 11.0, reason) + 16.0).min(240.0) };
+        let nom = c.fit(Wt::Semibold, 13.0, s(n, "nom"), (rw * 0.45).min(rw - rsw - 200.0).max(80.0));
+        let nw = c.text(Wt::Semibold, 13.0, SIDE + 40.0, y + 19.5, t.fg, &nom);
+        let liens = n["nb_liens"].as_u64().unwrap_or(0);
+        let util = n["utilise"].as_u64().unwrap_or(0);
+        let typ = match s(n, "type") {
+            "personne" => "personne",
+            "preference" => "goût",
+            "lieu" => "lieu",
+            "activite" | "activité" => "activité",
+            "ecole" => "école",
+            "evenement" => "événement",
+            "habitude" => "habitude",
+            "projet" => "projet",
+            "objet" => "objet",
+            _ => "autre",
+        };
+        let mut det = format!("{typ} · {liens} lien{}", if liens > 1 { "s" } else { "" });
+        if util > 0 {
+            det = format!("{det} · utilisé {util}×");
+        }
+        let det = c.fit(Wt::Regular, 11.0, &det, (rw - nw - rsw - 110.0).max(0.0));
+        c.text(Wt::Regular, 11.0, SIDE + 50.0 + nw, y + 19.0, t.fg3, &det);
+        if !reason.is_empty() {
+            let rx = SIDE - 6.0 + rw - 40.0 - rsw;
+            c.rr(rx, y + 6.0, rsw, 18.0, 9.0, ORANGE.a(0.25));
+            let rt = c.fit(Wt::Regular, 11.0, reason, rsw - 12.0);
+            c.text(Wt::Regular, 11.0, rx + 8.0, y + 19.0, t.fg, &rt);
+        }
+        let px = SIDE - 6.0 + rw - 18.0;
+        pin(c, px, y + 13.0, garde);
+        c.hit(px - 16.0, y, 32.0, 30.0, Action::IleN(N_MEM_PIN, i as u16));
+        y += 34.0;
+    }
+    if !ui.msg.is_empty() {
+        let m = c.fit(Wt::Regular, 12.0, &ui.msg, w - 2.0 * SIDE);
+        c.text(Wt::Regular, 12.0, SIDE, h - 50.0, t.fg2, &m);
+    }
+    // barre du bas
+    let by = h - 38.0;
+    let mut fx = SIDE - 4.0;
+    if ui.mem_edit.is_some() {
+        field(c, r, fx, by, w - SIDE - fx + 4.0, InputFor::MemRename, "Nouveau nom du souvenir (Entrée)…");
+        return;
+    }
+    let n = ui.mem_checked.len();
+    if n > 0 {
+        let (lab, bg) = if ui.mem_confirming() { (format!("Confirmer : supprimer {n} ?"), RED) } else { (format!("Supprimer ({n})"), RED.a(0.3)) };
+        fx += chip(c, fx, by + 4.0, &lab, bg, t.fg, Some(Action::Ile(A_MEM_DEL_SEL))) + 6.0;
+        fx += chip(c, fx, by + 4.0, "Garder", t.accent.a(0.3), t.fg, Some(Action::Ile(A_MEM_KEEP))) + 6.0;
+        fx += chip(c, fx, by + 4.0, "Changer la couleur", t.fg.a(0.12), t.fg, Some(Action::Ile(A_MEM_TYPE))) + 6.0;
+        if n == 1 {
+            fx += chip(c, fx, by + 4.0, "Renommer", t.fg.a(0.12), t.fg, Some(Action::Ile(A_MEM_RENAME))) + 6.0;
+        }
+        chip(c, fx, by + 4.0, "Tout décocher", t.fg.a(0.08), t.fg2, Some(Action::Ile(A_MEM_ALL)));
+    } else {
+        if k > 0 {
+            fx += chip(c, fx, by + 4.0, &format!("Nettoyer les suggestions ({k})"), ORANGE.a(0.85), WHITE, Some(Action::Ile(A_MEM_SUGG))) + 6.0;
+        }
+        if !rows.is_empty() {
+            chip(c, fx, by + 4.0, "Tout cocher", t.fg.a(0.1), t.fg2, Some(Action::Ile(A_MEM_ALL)));
+        }
+        c.text_r(Wt::Regular, 11.0, w - SIDE, by + 21.0, t.fg3, "Punaise = garder pour toujours");
+    }
 }
 
 // ---------- Musique (volume + Deezer) ----------
@@ -842,16 +1063,49 @@ pub fn pc_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
 // ---------- Paramètres de Jarvis ----------
 
 pub fn jsettings_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
-    if absent(c, r, "parametres") {
-        return;
-    }
     let t = c.t;
-    let Some(v) = r.jd.get("parametres") else { return };
     let mut rows: Vec<(String, String, Option<bool>, Vec<(Action, &'static str)>)> = Vec::new();
-    let voix = v["voix"]["actuelle"].as_str().unwrap_or("?");
-    let titre = arr(Some(&v["voix"]), "liste").into_iter().find(|x| s(x, "nom") == voix).map(|x| s(x, "titre")).unwrap_or(voix);
-    rows.push(("Voix".into(), titre.into(), None, vec![(Action::IleN(N_VOICE, 0), "‹"), (Action::IleN(N_VOICE, 1), "›")]));
-    rows.push(("Lancer Jarvis au démarrage de Windows".into(), String::new(), v["demarrage_windows"].as_bool(), vec![(Action::IleN(N_STARTUP, 0), "")]));
+    // ── réglés par la barre : l'IA, le PC, le PAI (marchent même sans l'assistant vocal)
+    let choix = crate::profils::CHOIX_MODELE.iter().find(|c| c.0 == r.cfg.ia_mode).map(|c| c.1).unwrap_or("Auto");
+    let mode = if r.cfg.ia_mode != 2 && !crate::ia::cle_nvidia() { format!("{choix} — il manque la clé NVIDIA") } else { choix.to_string() };
+    rows.push(("Modèle de l'IA (ou dis « passe sur le plus rapide »)".into(), mode, None, vec![(Action::IleN(N_IA_MODE, 0), "‹"), (Action::IleN(N_IA_MODE, 1), "›")]));
+    let p = crate::ia::profil();
+    let profil = if crate::profils::par_id(&r.cfg.profil).is_some() { p.nom.to_string() } else { format!("Auto : {}", p.nom) };
+    rows.push(("Profil du PC".into(), profil, None, vec![(Action::IleN(N_PROFIL, 0), "‹"), (Action::IleN(N_PROFIL, 1), "›")]));
+    let pc = crate::profils::materiel_connu().map(|m| crate::profils::resume(&m)).unwrap_or_else(|| "pas encore regardé".into());
+    rows.push((format!("Ce PC ({})", p.pour), pc, None, vec![(Action::IleN(N_DETECT, 0), "Détecter")]));
+    let modele = match crate::ia::actif() {
+        Some(a) => format!("{a} · {} outils", crate::ia::max_outils()),
+        None if crate::ia::puissant() => crate::ia::nom_mode().to_string(),
+        None => format!("{} · {:.1} Go", p.modele_local, p.taille_go),
+    };
+    rows.push(("En service".into(), modele, None, Vec::new()));
+    let pai = &r.cfg.pronote.pai;
+    for (i, j) in crate::pai::JOURS.iter().enumerate().take(6) {
+        let val = if pai.jours[i].trim().is_empty() { "comme Pronote".to_string() } else { pai.jours[i].clone() };
+        rows.push((format!("PAI · {j} (ex. 8h-12h30, aucun)"), val, None, vec![(Action::IleN(N_PAI_TEXT, i as u16), "Modifier")]));
+    }
+    let enleves = crate::pai::matieres_sans(pai, &r.d.pronote);
+    let sans = if pai.sans.trim().is_empty() { "aucune".to_string() } else if enleves.is_empty() { format!("{} → aucune matière trouvée", pai.sans) } else { format!("{} → {}", pai.sans, enleves.join(", ")) };
+    rows.push(("PAI · matières où je ne vais pas (virgules)".into(), sans, None, vec![(Action::IleN(N_PAI_TEXT, 6), "Modifier")]));
+    let n = pai.sautes.len() + pai.remis.len();
+    rows.push(("PAI · cours changés à la voix".into(), format!("{n} cours"), None, vec![(Action::IleN(N_PAI_RESET, 0), "Oublier")]));
+    let ic = &r.cfg.ile;
+    rows.push(("Sons des boutons (verre doux, plus bas après 21 h)".into(), String::new(), Some(ic.sons), vec![(Action::IleN(N_SONS, 0), "")]));
+    rows.push(("Volume des sons".into(), format!("{} %", (ic.sons_volume * 100.0).round()), None, vec![(Action::IleN(N_SONS_VOL, 0), "−"), (Action::IleN(N_SONS_VOL, 1), "+")]));
+    rows.push(("Onde au clic et lueur au survol".into(), String::new(), Some(ic.effets), vec![(Action::IleN(N_EFFETS, 0), "")]));
+    // ── réglés par l'assistant vocal (config.toml)
+    let vide = serde_json::Value::Null;
+    let v = r.jd.get("parametres").unwrap_or(&vide);
+    if v.is_null() {
+        rows.push(("Les autres réglages s'affichent quand l'assistant vocal Jarvis est lancé.".into(), String::new(), None, Vec::new()));
+    }
+    if !v.is_null() {
+        let voix = v["voix"]["actuelle"].as_str().unwrap_or("?");
+        let titre = arr(Some(&v["voix"]), "liste").into_iter().find(|x| s(x, "nom") == voix).map(|x| s(x, "titre")).unwrap_or(voix);
+        rows.push(("Voix".into(), titre.into(), None, vec![(Action::IleN(N_VOICE, 0), "‹"), (Action::IleN(N_VOICE, 1), "›")]));
+        rows.push(("Lancer Jarvis au démarrage de Windows".into(), String::new(), v["demarrage_windows"].as_bool(), vec![(Action::IleN(N_STARTUP, 0), "")]));
+    }
     for (i, rg) in arr(Some(v), "reglages").into_iter().enumerate() {
         let lab = s(rg, "libelle").to_string();
         let i = i as u16;
@@ -892,7 +1146,11 @@ pub fn jsettings_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
                     chip(c, x, y + 6.0, lab, t.fg.a(0.12), t.fg, Some(*a));
                     x -= 6.0;
                 }
-                let editing = matches!(r.st.input_for, InputFor::Setting(_)) && r.st.typing && acts.iter().any(|(a, _)| matches!(a, Action::IleN(N_SET_TEXT, k) if r.st.input_for == InputFor::Setting(*k as usize)));
+                let editing = r.st.typing
+                    && acts.iter().any(|(a, _)| match (a, r.st.input_for) {
+                        (Action::IleN(N_SET_TEXT, k), InputFor::Setting(j)) | (Action::IleN(N_PAI_TEXT, k), InputFor::Pai(j)) => *k as usize == j,
+                        _ => false,
+                    });
                 let shown = if editing { format!("{}|", r.st.input) } else { val };
                 let vv = c.fit(Wt::Semibold, 12.5, &shown, (x - w * 0.6).max(60.0));
                 c.text_r(Wt::Semibold, 12.5, x - 8.0, y + 23.0, if editing { t.accent } else { t.fg2 }, &vv);

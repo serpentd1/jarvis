@@ -68,6 +68,9 @@ async function traiter(m) {
   if (m.commande === "onglet_aller" || m.commande === "onglet_fermer" || m.commande === "onglet_doublons") {
     return await commandeOnglet(m);
   }
+  if (m.commande === "ouvrir") return await ouvrir(m.url);
+  if (m.commande === "onglet_texte") return await texteOnglet();
+  if (m.commande === "onglet_capture") return await captureOnglet();
   return { ok: false, erreur: "commande inconnue : " + m.commande };
 }
 
@@ -112,6 +115,37 @@ async function commandeOnglet(m) {
   const aFermer = (m.garder_un ? trouves.slice(1) : trouves).map((o) => o.id);
   if (aFermer.length) await chrome.tabs.remove(aFermer);
   return { ok: true, fermes: aFermer.length, garde: m.garder_un ? trouves[0].title : "" };
+}
+
+// ── pour l'IA : ouvrir une adresse, lire ou regarder l'onglet affiché ──
+async function ongletAffiche() {
+  const [o] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!o) throw new Error("aucun onglet ouvert dans Chrome");
+  return o;
+}
+
+async function ouvrir(url) {
+  if (!/^https?:\/\//.test(url || "")) return { ok: false, erreur: "adresse invalide" };
+  const o = await chrome.tabs.create({ url, active: true });
+  await chrome.windows.update(o.windowId, { focused: true });
+  return { ok: true };
+}
+
+async function texteOnglet() {
+  const o = await ongletAffiche();
+  if (!/^(https?|file):/.test(o.url || "")) return { ok: true, titre: o.title, url: o.url, texte: "" };
+  const [r] = await chrome.scripting.executeScript({
+    target: { tabId: o.id },
+    func: () => (document.body ? document.body.innerText : ""),
+  });
+  const texte = ((r && r.result) || "").replace(/\n{3,}/g, "\n\n").slice(0, 20000);
+  return { ok: true, titre: o.title, url: o.url, texte };
+}
+
+async function captureOnglet() {
+  const o = await ongletAffiche();
+  const image = await chrome.tabs.captureVisibleTab(o.windowId, { format: "jpeg", quality: 60 });
+  return { ok: true, titre: o.title, url: o.url, image: image.replace(/^data:image\/\w+;base64,/, "") };
 }
 
 async function commandeVideo(m) {

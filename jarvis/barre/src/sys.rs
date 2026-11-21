@@ -623,6 +623,123 @@ fn wav(notes: &[(f32, f32, f32)]) -> Vec<u8> {
 }
 
 /// Son doux : 0 = ouverture de l'île, 1 = notification.
+/// Les petits sons de la barre (jarvis/idees/sons-et-effets-barre.md) : du verre doux, très court, jamais fort.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Son {
+    /// Idée 1 : un « tic » de verre, un peu plus aigu ou plus grave à chaque fois.
+    Clic,
+    /// Idée 2 : deux notes qui montent (allumer), qui descendent (éteindre), une qui descend (fermer).
+    Allume,
+    Eteint,
+    Ferme,
+    /// Idée 3 : un « fffft » feutré pour changer d'onglet.
+    Onglet,
+    /// Idée 4 : un tiroir doux quand la grande île se déplie, et l'inverse.
+    Deplie,
+    Replie,
+    /// Idée 5 : un « ding » cristallin quand on coche une tâche.
+    Coche,
+    /// Idée 8 : une erreur gentille (deux notes graves).
+    Erreur,
+    /// Idée 10 : la fin d'un minuteur, un carillon qui monte doucement.
+    Carillon,
+}
+
+fn hasard() -> f32 {
+    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(7);
+    let mut x = n ^ 0x9E37_79B9;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    (x % 10_000) as f32 / 10_000.0
+}
+
+/// Notes en verre : une fondamentale et deux harmoniques « pas justes » (2,76 et 5,4), comme un verre qu'on frappe.
+fn verre(notes: &[(f32, f32, f32)], volume: f32, souffle: bool) -> Vec<i16> {
+    const RATE: f32 = 22050.0;
+    let mut pcm = Vec::new();
+    if souffle {
+        let n = (0.075 * RATE) as usize;
+        let (mut graine, mut lisse) = (12345u32, 0.0f32);
+        for i in 0..n {
+            graine = graine.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let b = ((graine >> 16) & 0x7fff) as f32 / 16384.0 - 1.0;
+            lisse += (b - lisse) * 0.18;
+            let t = i as f32 / n as f32;
+            let env = (t * std::f32::consts::PI).sin().powi(2);
+            pcm.push((lisse * env * 0.22 * volume * i16::MAX as f32) as i16);
+        }
+        return pcm;
+    }
+    for &(f0, f1, dur) in notes {
+        let n = (dur * RATE) as usize;
+        let mut ph = 0.0f32;
+        for i in 0..n {
+            let t = i as f32 / n as f32;
+            ph += (f0 + (f1 - f0) * t) / RATE * std::f32::consts::TAU;
+            let env = (i as f32 / (0.003 * RATE)).min(1.0) * (-6.5 * t).exp();
+            let v = ph.sin() * 0.62 + (2.76 * ph).sin() * 0.22 + (5.4 * ph).sin() * 0.07;
+            pcm.push((v * env * 0.16 * volume * i16::MAX as f32) as i16);
+        }
+    }
+    pcm
+}
+
+fn en_wav(pcm: &[i16]) -> Vec<u8> {
+    const RATE: u32 = 22050;
+    let data_len = (pcm.len() * 2) as u32;
+    let mut b = Vec::with_capacity(44 + data_len as usize);
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data_len).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&RATE.to_le_bytes());
+    b.extend_from_slice(&(RATE * 2).to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&data_len.to_le_bytes());
+    for v in pcm {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b
+}
+
+/// Joue un son de la barre au volume donné (0 à 1). PlaySoundW coupe le son d'avant : parfait pour des clics.
+pub fn son(s: Son, volume: f32) {
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    let v = volume.clamp(0.0, 1.0);
+    if v < 0.02 {
+        return;
+    }
+    let clic = 1950.0 * (0.93 + 0.14 * hasard());
+    let notes: Vec<(f32, f32, f32)> = match s {
+        Son::Clic => vec![(clic, clic * 0.99, 0.05)],
+        Son::Allume => vec![(1319.0, 1319.0, 0.05), (1760.0, 1760.0, 0.08)],
+        Son::Eteint => vec![(1760.0, 1760.0, 0.05), (1319.0, 1319.0, 0.08)],
+        Son::Ferme => vec![(1568.0, 1175.0, 0.08)],
+        Son::Onglet => Vec::new(),
+        Son::Deplie => vec![(392.0, 784.0, 0.14)],
+        Son::Replie => vec![(784.0, 392.0, 0.12)],
+        Son::Coche => vec![(2637.0, 2637.0, 0.14)],
+        Son::Erreur => vec![(330.0, 330.0, 0.09), (262.0, 262.0, 0.15)],
+        Son::Carillon => vec![(523.0, 523.0, 0.16), (659.0, 659.0, 0.16), (784.0, 784.0, 0.16), (1047.0, 1047.0, 0.32)],
+    };
+    let wav = en_wav(&verre(&notes, v, s == Son::Onglet));
+    // le son joue depuis la mémoire : on garde les derniers en vie le temps qu'ils jouent
+    static GARDES: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+    let mut g = GARDES.lock().unwrap_or_else(|e| e.into_inner());
+    g.push(wav);
+    if g.len() > 3 {
+        g.remove(0);
+    }
+    if let Some(b) = g.last() {
+        unsafe { PlaySoundW(b.as_ptr() as _, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
+    }
+}
+
 pub fn soft_sound(kind: usize) {
     use std::sync::OnceLock;
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};

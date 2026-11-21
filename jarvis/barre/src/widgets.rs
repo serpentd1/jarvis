@@ -578,6 +578,7 @@ fn alert_short(l: &Lesson) -> String {
         Alert::Canceled => "annulé".into(),
         Alert::Absent => "prof absent".into(),
         Alert::Room => "changement de salle".into(),
+        Alert::Skip => "tu n'y vas pas".into(),
         _ => l.status.to_lowercase(),
     }
 }
@@ -586,6 +587,7 @@ fn alert_color(l: &Lesson, t: &Theme) -> Rgba {
     match l.alert() {
         Alert::Canceled | Alert::Absent => RED,
         Alert::Room => ORANGE,
+        Alert::Skip => Rgba::rgb8(142, 142, 147),
         _ => t.accent,
     }
 }
@@ -639,7 +641,7 @@ fn upcoming(d: &Data, now: NaiveDateTime, t: &Theme, n: usize) -> Vec<Item> {
     }
     // Pronote : cours annulés, profs absents, changements de salle (7 prochains jours)
     for l in &d.pronote.lessons {
-        if l.alert() != Alert::None && l.end > now && l.start < now + Duration::days(7) {
+        if !matches!(l.alert(), Alert::None | Alert::Skip) && l.end > now && l.start < now + Duration::days(7) {
             let title = format!("{} — {}", l.subject, alert_short(l));
             v.push((l.start, Item { color: alert_color(l, t), title, when: when_label(l.start, today), alert: l.bad() }));
         }

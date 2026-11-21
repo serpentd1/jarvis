@@ -13,6 +13,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -163,6 +164,15 @@ pub fn charger(ancienne_url_ollama: &str) {
             (d, String::new())
         }
     };
+    // une clé NVIDIA enregistrée avec l'adresse du site (build.nvidia.com) : on remet la bonne adresse
+    for f in fournisseurs.iter_mut().filter(|f| est_nvidia(f)) {
+        f.url = NVIDIA_URL.to_string();
+        f.gratuit = true; // build.nvidia.com : des crédits gratuits
+        if f.nom.to_lowercase().contains("nvidia.com") {
+            f.nom = "NVIDIA".into();
+        }
+    }
+    cle_nvidia_env(&mut fournisseurs);
     trier(&mut fournisseurs);
     avec(|e| {
         e.fournisseurs = fournisseurs;
@@ -266,6 +276,126 @@ pub fn regler_modele_premier(s: &str) {
     enregistrer();
 }
 
+/// Le modèle NVIDIA choisi dans config.toml ([conversation] modele). Vide = choisi tout seul.
+static MODELE_API: Mutex<String> = Mutex::new(String::new());
+
+thread_local! {
+    /// Modèle imposé pour une seule demande (POST /ia/discuter avec « modele » : mesurer un modèle sans sa clé).
+    static MODELE_ICI: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Fait `f` avec ce modèle chez NVIDIA (vide = le modèle habituel).
+pub fn avec_modele<R>(modele: &str, f: impl FnOnce() -> R) -> R {
+    MODELE_ICI.with(|m| *m.borrow_mut() = modele.trim().to_string());
+    let r = f();
+    MODELE_ICI.with(|m| m.borrow_mut().clear());
+    r
+}
+
+pub fn modele_api(modele: &str) {
+    if let Ok(mut m) = MODELE_API.lock() {
+        *m = modele.trim().to_string();
+    }
+}
+
+const NVIDIA_URL: &str = "https://integrate.api.nvidia.com/v1";
+
+// ── Deux modes : ultra performant (clé NVIDIA) ou ultra léger (sur ce PC) ──────────────────────────
+/// 0 = auto (ultra performant s'il y a une clé NVIDIA allumée), 1 = ultra performant, 2 = ultra léger,
+/// 3 = NVIDIA rapide qui voit les images, 4 = NVIDIA très rapide (voir profils::CHOIX_MODELE).
+static MODE: AtomicU8 = AtomicU8::new(0);
+/// Profil matériel en service (voir profils.rs).
+static PROFIL: Mutex<String> = Mutex::new(String::new());
+
+pub fn regler_mode(mode: u8, profil: &str) {
+    MODE.store(mode.min(4), Ordering::Relaxed);
+    if let Ok(mut p) = PROFIL.lock() {
+        *p = profil.to_string();
+    }
+}
+
+pub fn mode_choisi() -> u8 {
+    MODE.load(Ordering::Relaxed)
+}
+
+pub fn profil() -> &'static crate::profils::Profil {
+    let id = PROFIL.lock().map(|p| p.clone()).unwrap_or_default();
+    crate::profils::par_id(&id).unwrap_or(&crate::profils::PROFILS[2])
+}
+
+/// Une clé NVIDIA est enregistrée et le service est allumé.
+pub fn cle_nvidia() -> bool {
+    liste().iter().any(|f| est_nvidia(f) && f.on && !f.cle.trim().is_empty())
+}
+
+/// Mode ultra performant en service : choisi (ou auto) ET une clé NVIDIA. Sans clé, c'est toujours le mode léger.
+pub fn puissant() -> bool {
+    mode_choisi() != 2 && cle_nvidia()
+}
+
+pub fn nom_mode() -> &'static str {
+    match (puissant(), mode_choisi()) {
+        (true, 3) => "NVIDIA rapide qui voit les images (120B)",
+        (true, 4) => "NVIDIA très rapide (30B)",
+        (true, _) => "ultra performant (NVIDIA 550B)",
+        (false, _) => "ultra léger (sur ce PC)",
+    }
+}
+
+/// Outils donnés à l'IA à chaque question : beaucoup pour le gros modèle, peu pour le petit.
+pub fn max_outils() -> usize {
+    if puissant() { 24 } else { profil().max_outils }
+}
+
+/// Actions trop lourdes pour le petit modèle : seulement en mode ultra performant
+/// (les noms qui finissent par « _ » valent pour tous les outils qui commencent ainsi).
+const OUTILS_LOURDS: [&str; 10] = [
+    "executer_powershell", "creer_page_web", "modifier_page_web", "remplacer_dans_fichier", "recherche_approfondie",
+    "agent_", "cliquer_sur", "action_ecran", "zone_ecran", "whatsapp_",
+];
+
+pub fn outil_permis(nom: &str) -> bool {
+    puissant() || !OUTILS_LOURDS.iter().any(|x| if x.ends_with('_') { nom.starts_with(x) } else { nom == *x })
+}
+
+/// L'ordre des services selon le mode : NVIDIA d'abord en ultra performant, ceux du PC d'abord en ultra léger.
+fn ordre_du_mode(mut v: Vec<Fournisseur>) -> Vec<Fournisseur> {
+    let p = puissant();
+    v.sort_by_key(|f| if p { !est_nvidia(f) } else { !f.local });
+    v
+}
+
+fn a_des_images(r: &Requete) -> bool {
+    r.messages.iter().any(|m| !images(m).is_empty())
+}
+
+fn est_nvidia(f: &Fournisseur) -> bool {
+    f.url.to_lowercase().contains("nvidia.com")
+}
+
+/// La clé NVIDIA de la variable d'environnement NVIDIA_API_KEY : ajoute le service s'il manque
+/// (ou lui donne la clé s'il n'en a pas). Rien n'est affiché ni journalisé.
+fn cle_nvidia_env(fournisseurs: &mut Vec<Fournisseur>) {
+    let Ok(cle) = std::env::var("NVIDIA_API_KEY") else { return };
+    let cle = cle.trim().to_string();
+    if cle.is_empty() {
+        return;
+    }
+    match fournisseurs.iter_mut().find(|f| est_nvidia(f)) {
+        Some(f) if f.cle.trim().is_empty() => f.cle = cle,
+        Some(_) => {}
+        None => fournisseurs.push(Fournisseur {
+            nom: "NVIDIA".into(),
+            genre: Genre::OpenAi,
+            url: NVIDIA_URL.into(),
+            cle,
+            gratuit: true,
+            on: true,
+            ..Default::default()
+        }),
+    }
+}
+
 /// Le petit modèle des ordres, réglé dans config.toml (section cerveau), pour le service Ollama.
 pub fn rapide_ollama(modele: &str) {
     let m = modele.trim();
@@ -282,6 +412,10 @@ pub fn rapide_ollama(modele: &str) {
 /// Adresse normale : sans « / » final, avec « http:// » si rien n'est écrit.
 fn adresse_normale(url: &str) -> String {
     let u = url.trim().trim_end_matches('/');
+    // « build.nvidia.com » est le site web : l'IA répond à une autre adresse
+    if u.to_lowercase().contains("nvidia.com") {
+        return NVIDIA_URL.to_string();
+    }
     if u.is_empty() {
         String::new()
     } else if u.starts_with("http://") || u.starts_with("https://") {
@@ -535,9 +669,28 @@ fn cache_lire(nom: &str) -> Option<String> {
 }
 
 /// Le modèle à utiliser pour ce service : réglé à la main, sinon choisi tout seul (gardé 10 min).
-fn modele_de(f: &Fournisseur, rapide: bool) -> Result<String, Pas> {
+fn modele_de(f: &Fournisseur, rapide: bool, images: bool) -> Result<String, Pas> {
     if rapide && !f.modele_rapide.trim().is_empty() {
         return Ok(f.modele_rapide.trim().to_string());
+    }
+    if est_nvidia(f) {
+        let ici = MODELE_ICI.with(|m| m.borrow().clone());
+        if !ici.is_empty() {
+            return Ok(ici);
+        }
+        // ultra performant : le gros modèle pour le texte, celui qui voit les images pour les captures
+        if puissant() {
+            let m = match (mode_choisi(), images) {
+                (_, true) | (3, _) => crate::profils::NVIDIA_VISION,
+                (4, false) => crate::profils::NVIDIA_RAPIDE,
+                _ => crate::profils::NVIDIA_GROS,
+            };
+            return Ok(m.to_string());
+        }
+        let force = MODELE_API.lock().map(|m| m.clone()).unwrap_or_default();
+        if !force.is_empty() {
+            return Ok(force);
+        }
     }
     if !f.modele.trim().is_empty() {
         return Ok(f.modele.trim().to_string());
@@ -546,7 +699,10 @@ fn modele_de(f: &Fournisseur, rapide: bool) -> Result<String, Pas> {
         return Ok(m);
     }
     let liste = trouver_modeles(f)?;
-    let m = choisir_dans(&liste, &f.url, f.genre).ok_or_else(|| Pas {
+    // sur ce PC : le modèle du profil matériel s'il est installé
+    let voulu = crate::profils::base_modele(profil()).to_lowercase();
+    let du_profil = if f.local { liste.iter().find(|m| m.to_lowercase().starts_with(&voulu)).cloned() } else { None };
+    let m = du_profil.or_else(|| choisir_dans(&liste, &f.url, f.genre)).ok_or_else(|| Pas {
         suivant: true,
         echec: Echec::Autre(format!("{} : aucun modèle trouvé", f.nom)),
     })?;
@@ -931,7 +1087,7 @@ fn ollama(f: &Fournisseur, modele: &str, r: &Requete, flux: Option<&mut dyn FnMu
 
 /// Un seul service : son modèle, puis l'appel au bon protocole. Renvoie aussi le modèle utilisé.
 fn un(f: &Fournisseur, r: &Requete, mut flux: Option<&mut dyn FnMut(&str) -> bool>) -> Result<(Retour, String), Pas> {
-    let modele = modele_de(f, r.rapide)?;
+    let modele = modele_de(f, r.rapide, a_des_images(r))?;
     let p = match appeler(f, &modele, r, reprise(&mut flux)) {
         Ok(retour) => return Ok((retour, modele)),
         Err(p) if mauvais_modele(&p) => p,
@@ -996,7 +1152,7 @@ fn retenir_modele(nom: &str, m: &str) {
 pub fn discuter(r: &Requete, mut flux: Option<&mut dyn FnMut(&str) -> bool>) -> Result<Retour, Echec> {
     let mut essayes = 0usize;
     let mut derniere = Echec::Injoignable;
-    for f in liste().iter().filter(|f| f.on) {
+    for f in ordre_du_mode(liste()).iter().filter(|f| f.on) {
         if avec(|e| e.hors_ligne.get(&f.nom).is_some_and(|t| t.elapsed() < HORS_LIGNE)) {
             continue;
         }
@@ -1082,7 +1238,9 @@ pub fn etat_json() -> Value {
             })
         })
         .collect();
-    json!({"ok": true, "actif": actif, "fournisseurs": fournisseurs})
+    let p = profil();
+    json!({"ok": true, "actif": actif, "fournisseurs": fournisseurs, "mode": nom_mode(), "puissant": puissant(),
+           "profil": {"id": p.id, "nom": p.nom, "modele_local": p.modele_local, "max_outils": max_outils()}})
 }
 
 /// Un service que la clé peut correspondre.
@@ -1401,6 +1559,8 @@ mod tests {
         assert_eq!(adresse_normale("localhost:11434/ "), "http://localhost:11434");
         assert_eq!(adresse_normale("https://x.fr/v1/"), "https://x.fr/v1");
         assert_eq!(adresse_normale("  "), "");
+        assert_eq!(adresse_normale("build.nvidia.com"), "https://integrate.api.nvidia.com/v1");
+        assert_eq!(adresse_normale("https://build.nvidia.com/"), "https://integrate.api.nvidia.com/v1");
         assert_eq!(domaine("https://api.exemple.fr/v1"), "api.exemple.fr");
     }
 

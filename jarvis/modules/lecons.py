@@ -30,6 +30,37 @@ CONSIGNE = (
 )
 
 
+def lecon_depuis_pronote(p: dict, matiere: str = "", maintenant: str | None = None):
+    """Une « leçon » à réviser tirée de Pronote : les devoirs de la matière demandée, sinon ceux du dernier cours
+    de la journée (déjà commencé). None si Pronote n'a rien d'utile."""
+    if not p or not p.get("connecte"):
+        return None
+    maintenant = maintenant or time.strftime("%H:%M")
+    m = normaliser(matiere or "")
+    if not m:
+        passes = [c for c in p.get("cours_aujourdhui") or [] if str(c.get("debut", "")) <= maintenant
+                  and not c.get("annule") and not c.get("n_y_va_pas") and not c.get("perso")]
+        if passes:
+            m = normaliser(passes[-1].get("matiere", ""))
+    devoirs = p.get("devoirs") or []
+    if not m and devoirs:
+        m = normaliser(devoirs[0].get("matiere", ""))
+    if not m:
+        return None
+    mots = [x for x in m.split() if len(x) > 2] or [m]
+    choisis = [d for d in devoirs if any(x in normaliser(d.get("matiere", "")) for x in mots)]
+    nom = next((d.get("matiere") for d in choisis), None) or matiere or m
+    if choisis:
+        texte = "\n".join(f"- {d.get('texte', '')}" for d in choisis[:5])
+        sujet = (f"Matière : {nom}. Voici ses devoirs sur Pronote (ils disent ce qu'il étudie en ce moment) :\n{texte}\n"
+                 "Pose des questions de niveau collège sur CES notions (définitions, exemples, méthodes), avec tes "
+                 "propres connaissances.")
+    else:
+        sujet = (f"Matière : {nom}. Il n'y a pas de devoir noté dans Pronote pour cette matière : pose des questions "
+                 "de niveau collège sur les notions principales de cette matière au programme de son année.")
+    return {"matiere": nom, "texte": sujet, "cree": date.today().isoformat(), "pronote": True}
+
+
 def installer(ctx, reg):
     base = Stockage("lecons", {"lecons": []})
     revision = {}        # révision en cours : lecon, messages, juste, total, derniere
@@ -42,6 +73,12 @@ def installer(ctx, reg):
             if m and nom and (m in nom or nom in m):
                 return lecon
         return lecons[-1] if lecons and not m else None
+
+    def lecon_pronote(matiere: str = ""):
+        """Pas de leçon enregistrée : on révise d'après Pronote (devoirs de la matière, ou du dernier cours)."""
+        givre = getattr(ctx, "givre", None)
+        e = (givre.etat() if givre else None) or {}
+        return lecon_depuis_pronote(e.get("pronote") or {}, matiere)
 
     def demander_ia(messages):
         brut = ollama.discuter(ctx.cfg["cerveau"], messages, temperature=0.4, max_mots=120, json_seulement=True)
@@ -73,10 +110,11 @@ def installer(ctx, reg):
         return Resultat(f"C'est noté, j'ai ta leçon{de}. Dis « fais-moi réciter ma leçon{de} » quand tu veux.")
 
     def reciter_lecon(matiere: str = ""):
-        lecon = trouver(matiere)
+        lecon = trouver(matiere) or lecon_pronote(matiere)
         de = f" de {matiere}" if matiere else ""
         if not lecon:
-            return Resultat(f"Je n'ai pas encore ta leçon{de}. Copie-la, puis dis : apprends ma leçon{de}.", ok=False)
+            return Resultat(f"Je n'ai pas encore ta leçon{de}, et je ne trouve rien sur Pronote. Copie-la, puis dis : "
+                            f"apprends ma leçon{de}.", ok=False)
         revision.clear()
         revision.update(lecon=lecon, juste=0, total=0, derniere=time.time(), messages=[
             {"role": "system", "content": CONSIGNE.format(lecon=lecon["texte"])},
@@ -84,6 +122,9 @@ def installer(ctx, reg):
         _, dire = demander_ia(revision["messages"])
         revision["messages"].append({"role": "assistant", "content": dire})
         de = f" de {lecon['matiere']}" if lecon["matiere"] else ""
+        if lecon.get("pronote"):
+            return Resultat(f"Je n'ai pas ta leçon{de} enregistrée, alors je t'interroge d'après Pronote. Dis « stop » "
+                            f"pour arrêter. {dire}")
         return Resultat(f"C'est parti pour ta leçon{de} ! Dis « stop » pour arrêter. {dire}")
 
     def bilan():
@@ -123,8 +164,15 @@ def installer(ctx, reg):
               "est affiché à l'écran.", {"matiere": "la matière ou le titre (ex : maths)",
                                           "source": {"type": "string", "enum": ["presse_papiers", "ecran"]}},
               [], apprendre_lecon)
-    reg.outil("reciter_lecon", "Fait réciter une leçon enregistrée : pose des questions une par une et corrige.",
-              {"matiere": "la matière (ex : maths)"}, [], reciter_lecon)
+    reg.outil("reciter_lecon", "Fait réviser l'utilisateur à l'oral (« fais-moi réviser ») : pose des questions une par "
+              "une et corrige. Prend la leçon enregistrée, sinon ce qu'il étudie d'après Pronote (devoirs de la "
+              "matière ou du dernier cours).", {"matiere": "la matière (ex : maths), vide = la dernière leçon"},
+              [], reciter_lecon)
+    reg.regle(r"^(?:(?:vas y |allez |bon )?(?:fais|fait|faire)(?: moi)? reviser|(?:on|je veux|j'aimerais|je voudrais) "
+              r"(?:reviser|reviser un peu)|interroge moi|teste moi|aide moi a reviser|on revise)"
+              r"(?: (?:ma |la |mon |mes |les )?(?:derniere )?(?:lecons?|cours))?"
+              r"(?: (?:de |d'|en |sur (?:le |la |les |l')?)(?P<m>[a-z' ]+?))?(?: s'il te plait| stp)?$",
+              lambda m, t: [("reciter_lecon", {"matiere": (m["m"] or "").strip()})], priorite=21)
     reg.regle(r"^(?:apprends|retiens|enregistre|garde|memorise)(?: moi)? (?:ma|la|cette|mon) (?:lecon|cours)"
               r"(?: d[e'] ?(?P<m>[a-z' ]+?))?(?P<e> (?:qui est )?(?:sur|a) (?:l'|l |mon )?ecran)?$",
               lambda m, t: [("apprendre_lecon", {"matiere": (m["m"] or "").strip(),

@@ -468,6 +468,7 @@ fn spec(page: usize, info: &Info) -> Vec<(K, Option<F>, String)> {
             b.row(K::Text("vide = toute la journée"), F::EvTime, "Heure (HH:MM)");
             b.row(K::Text("60"), F::EvDur, "Durée en minutes");
             b.row(K::Button("Créer"), F::EvCreate, "Ajouter à Google Agenda");
+            b.note("Ton emploi du temps aménagé (PAI), le mode de l'IA et le profil du PC sont dans la grande application › Paramètres.");
         }
         3 => {
             let a = &info.acc;

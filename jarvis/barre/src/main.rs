@@ -22,6 +22,8 @@ mod island_draw;
 mod jarvis_data;
 mod jarvis_link;
 mod preview;
+mod pai;
+mod profils;
 mod pouvoirs;
 mod pronote;
 mod settings;
@@ -310,6 +312,51 @@ impl App {
     }
 
     /// Crée / détruit les fenêtres selon les widgets activés.
+    /// Un petit son de la barre, au volume réglé, plus bas le soir (après 21 h et avant 7 h).
+    fn bruit(&self, s: sys::Son) {
+        if !self.cfg.ile.sons {
+            return;
+        }
+        let h = Local::now().hour();
+        let soir = if h >= 21 || h < 7 { 0.45 } else { 1.0 };
+        sys::son(s, self.cfg.ile.sons_volume * soir);
+    }
+
+    /// Souris sur l'île : on redessine seulement quand le bouton survolé change (lueur).
+    fn ile_survol(&mut self, x: i32, y: i32) {
+        let effets = self.cfg.ile.effets;
+        let Some(st) = &mut self.ile else { return };
+        let (fx, fy) = (x as f32, y as f32);
+        let avant = st.survol;
+        st.souris = Some((fx, fy));
+        st.survol = st.hits.iter().rposition(|h| fx >= h.x && fx < h.x + h.w && fy >= h.y && fy < h.y + h.h);
+        if effets && st.survol != avant {
+            self.ile_render();
+        }
+    }
+
+    /// Mode de l'IA ou profil du PC changé dans la grande application. `voix` : le profil a changé, la
+    /// transcription de la voix suit (écrite par Jarvis dans config.toml, prise au prochain démarrage).
+    fn ia_change(&mut self, voix: bool) {
+        let p = profil_en_service(&self.cfg);
+        ia::regler_mode(self.cfg.ia_mode, p.id);
+        config::save(&self.cfg);
+        if voix {
+            let (modele, appareil, precision) = profils::voix(p, &profils::materiel_connu().unwrap_or_default());
+            for (cle, valeur) in [("appareil", appareil), ("precision", precision), ("modele", modele)] {
+                self.jact("parametres", serde_json::json!({"section": "transcription", "cle": cle, "valeur": valeur}));
+            }
+        }
+    }
+
+    /// PAI modifié (Paramètres ou voix) : on le recopie pour le fil de Pronote et on recalcule les cours.
+    fn pai_change(&mut self) {
+        pai::regler(&self.cfg.pronote.pai);
+        pai::appliquer(&self.cfg.pronote.pai, &mut self.data.pronote, Local::now().date_naive());
+        config::save(&self.cfg);
+        self.status = "Emploi du temps enregistré".into();
+    }
+
     fn sync_slots(&mut self) {
         let mut i = 0;
         while i < self.slots.len() {
@@ -601,6 +648,8 @@ impl App {
                         self.cfg.pn_qr.clear();
                     }
                     self.check_good_grades(&s);
+                    let mut s = s;
+                    pai::appliquer(&self.cfg.pronote.pai, &mut s, Local::now().date_naive());
                     self.data.pronote = s;
                     dirty.extend([Kind::NextClass, Kind::Homework, Kind::Grades, Kind::School, Kind::Calendar]);
                 }
@@ -1381,6 +1430,7 @@ impl App {
     fn ile_ring(&mut self, label: String) {
         sys::log(&format!("île : sonnerie ({label})"));
         self.ring = Some(island::Ring { label: label.clone(), since: std::time::Instant::now() });
+        self.bruit(sys::Son::Carillon);
         self.ile_wake();
         if let Some(st) = &mut self.ile {
             if st.hidden {
@@ -1613,6 +1663,21 @@ impl App {
         let Some(act) = self.ile_hit(x, y) else { return };
         self.ile_last_act = Some(act);
         let hwnd = st.hwnd;
+        // une onde de lumière là où on clique, et un petit son de verre qui dépend du bouton
+        if let Some(st) = &mut self.ile {
+            st.onde = Some((x as f32, y as f32, std::time::Instant::now()));
+        }
+        let son = match act {
+            Action::IleN(island::N_VIEW | island::N_SECTION, _) => Some(sys::Son::Onglet),
+            Action::Ile(island::A_BACK) => Some(sys::Son::Ferme),
+            Action::Ile(island::A_BIG_OPEN | island::A_BIG_CLOSE) => None,
+            Action::IleN(island::N_TASK_TOGGLE, _) => Some(sys::Son::Coche),
+            Action::IleN(island::N_SONS | island::N_EFFETS | island::N_SONS_VOL, _) => None,
+            _ => Some(sys::Son::Clic),
+        };
+        if let Some(s) = son {
+            self.bruit(s);
+        }
         if self.big_action(act) {
             self.ile_render();
             return;
@@ -1972,7 +2037,7 @@ impl App {
                 .iter()
                 .filter(|h| h.due >= today)
                 .take(10)
-                .map(|h| format!("pour le {} en {} : {}{}", h.due.format("%d/%m"), h.subject, h.text.chars().take(160).collect::<String>(), if h.done { " (fait)" } else { "" }))
+                .map(|h| format!("pour le {} en {} : {}{}{}", h.due.format("%d/%m"), h.subject, h.text.chars().take(160).collect::<String>(), if h.done { " (fait)" } else { "" }, if pai::va_au_cours(p, h.due, &h.subject) == Some(false) { " (il ne va pas à ce cours : PAI)" } else { "" }))
                 .collect();
             s += &if hw.is_empty() { "Aucun devoir à venir.\n".to_string() } else { format!("Devoirs : {}.\n", hw.join(" ; ")) };
             let g: Vec<String> = p.grades.iter().take(6).map(|g| format!("{} {}/{} le {}", g.subject, pronote::grade_txt(&g.value), g.out_of, g.date.format("%d/%m"))).collect();
@@ -2081,13 +2146,14 @@ impl App {
                 texte: req.question,
                 source: "ile".into(),
                 coupe: None,
+                pas_dit: None,
                 python: self.jarvis.online(),
                 contexte: Some(format!("{style}{ctx}")),
                 reglages: None,
             };
             let out = self.out.clone();
             std::thread::spawn(move || {
-                let r = cerveau::repondre(d, &mut |_| {});
+                let r = cerveau::repondre(d, &mut |_| true);
                 out.send(Msg::Answer(id, Ok(r.texte)));
             });
         }
@@ -2095,6 +2161,9 @@ impl App {
     }
 
     fn ai_answer(&mut self, id: u64, r: Result<String, String>) {
+        if r.is_err() {
+            self.bruit(sys::Son::Erreur);
+        }
         let Some((origin, idx, json)) = self.pending.remove(&id) else { return };
         if let Origin::Mail(n) = origin {
             if self.mail_ai.n == Some(n) {
@@ -2299,6 +2368,8 @@ impl App {
         }
         if name == "memoire" {
             self.mem.sync(self.jd.get("memoire"));
+            let ids: Vec<String> = jarvis_data::arr(self.jd.get("memoire"), "noeuds").iter().map(|n| jarvis_data::s(n, "id").to_string()).collect();
+            self.ui.mem_checked.retain(|x| ids.contains(x));
         }
         if name == "taches" {
             let n = jarvis_data::arr(self.jd.get("taches"), "listes").len();
@@ -2376,10 +2447,28 @@ impl App {
                 self.cfg.pn_pin = q;
                 self.pn_login();
             }
+            island::InputFor::MemSearch => {
+                self.ui.mem_search = q;
+                self.mem_scroll_top();
+            }
+            island::InputFor::MemRename => {
+                if let Some(id) = self.ui.mem_edit.take() {
+                    self.ui.mem_checked.clear();
+                    self.jact("memoire", json!({"action": "modifier", "id": id, "nom": q}));
+                }
+            }
             island::InputFor::Relation => {
                 if let (Some(a), Some(b)) = (self.ui.link_from.take(), self.ui.link_to.take()) {
                     self.jact("memoire", json!({"action": "lier", "a": a, "b": b, "relation": q}));
                 }
+            }
+            island::InputFor::Pai(i) => {
+                if i < 6 {
+                    self.cfg.pronote.pai.jours[i] = q.trim().to_string();
+                } else {
+                    self.cfg.pronote.pai.sans = q.trim().to_string();
+                }
+                self.pai_change();
             }
             island::InputFor::Setting(i) => {
                 if let Some(rg) = jarvis_data::arr(self.jd.get("parametres"), "reglages").get(i) {
@@ -2402,10 +2491,111 @@ impl App {
                 self.ui.task_list = 0;
             }
             Action::Ile(A_COPIES_CLEAR) => self.jact("copies", json!({"action": "effacer"})),
+            Action::Ile(A_HIST_CLEAR) => self.jact("historique", json!({"action": "effacer"})),
             Action::Ile(A_REM_CLEAN) => self.jact("rappels", json!({"action": "nettoyer"})),
+            // supprimer : 1er clic = « Confirmer ? », 2e clic dans les 5 s = suppression (annulable)
             Action::Ile(A_MEM_DEL) => {
-                if let Some(id) = self.mem.sel.take() {
+                if !self.ui.mem_confirming() {
+                    self.ui.mem_confirm = Some(std::time::Instant::now());
+                } else if let Some(id) = self.mem.sel.take() {
+                    self.ui.mem_confirm = None;
                     self.jact("memoire", json!({"action": "supprimer", "id": id}));
+                }
+            }
+            Action::Ile(A_MEM_MODE) => {
+                self.ui.mem_list = !self.ui.mem_list;
+                self.ui.mem_confirm = None;
+                self.ui.mem_edit = None;
+                self.ui.msg.clear();
+                self.mem_scroll_top();
+            }
+            Action::Ile(A_MEM_FILTER) => {
+                self.ui.mem_filter = (self.ui.mem_filter + 1) % jarvis_data::MEM_FILTERS.len() as u8;
+                self.mem_scroll_top();
+            }
+            Action::Ile(A_MEM_SORT) => {
+                self.ui.mem_sort = (self.ui.mem_sort + 1) % jarvis_data::MEM_SORTS.len() as u8;
+                self.mem_scroll_top();
+            }
+            Action::Ile(A_MEM_SEARCH_CLEAR) => {
+                self.ui.mem_search.clear();
+                self.mem_scroll_top();
+            }
+            // « Nettoyer les suggestions » : on coche tout ce qui serait supprimé et on le montre, sans rien supprimer
+            Action::Ile(A_MEM_SUGG) => {
+                let v = self.jd.get("memoire");
+                let gardes: Vec<String> = jarvis_data::arr(v, "noeuds").iter().filter(|n| n["garde"].as_bool() == Some(true)).map(|n| jarvis_data::s(n, "id").to_string()).collect();
+                self.ui.mem_checked = jarvis_data::arr(v, "suggestions").iter().map(|x| jarvis_data::s(x, "id").to_string()).filter(|id| !gardes.contains(id)).collect();
+                self.ui.mem_filter = 1;
+                self.ui.mem_search.clear();
+                self.ui.mem_confirm = None;
+                self.ui.msg = format!("Voici ce qui serait supprimé ({}). Décoche ce que tu veux garder, puis « Supprimer ».", self.ui.mem_checked.len());
+                self.mem_scroll_top();
+            }
+            Action::Ile(A_MEM_DEL_SEL) => {
+                if self.ui.mem_checked.is_empty() {
+                } else if !self.ui.mem_confirming() {
+                    self.ui.mem_confirm = Some(std::time::Instant::now());
+                } else {
+                    let ids = std::mem::take(&mut self.ui.mem_checked);
+                    self.ui.mem_confirm = None;
+                    self.jact("memoire", json!({"action": "nettoyer", "ids": ids}));
+                }
+            }
+            Action::Ile(A_MEM_KEEP) => {
+                let ids = std::mem::take(&mut self.ui.mem_checked);
+                let v = self.jd.get("memoire");
+                let tous_gardes = jarvis_data::arr(v, "noeuds").iter().filter(|n| ids.iter().any(|i| i == jarvis_data::s(n, "id"))).all(|n| n["garde"].as_bool() == Some(true));
+                self.ui.msg = if tous_gardes { "Ces souvenirs ne sont plus épinglés.".into() } else { "Gardés : ils ne seront jamais proposés au nettoyage.".into() };
+                self.jact("memoire", json!({"action": "modifier", "ids": ids, "garde": !tous_gardes}));
+            }
+            Action::Ile(A_MEM_UNDO) => self.jact("memoire", json!({"action": "annuler_nettoyage"})),
+            Action::Ile(A_MEM_ALL) => {
+                if !self.ui.mem_checked.is_empty() {
+                    self.ui.mem_checked.clear();
+                } else {
+                    let ui = &self.ui;
+                    self.ui.mem_checked = jarvis_data::mem_rows(self.jd.get("memoire"), ui.mem_filter, ui.mem_sort, &ui.mem_search).iter().filter(|n| n["garde"].as_bool() != Some(true)).map(|n| jarvis_data::s(n, "id").to_string()).collect();
+                }
+                self.ui.mem_confirm = None;
+            }
+            Action::Ile(A_MEM_RENAME) => {
+                if let [id] = self.ui.mem_checked.as_slice() {
+                    let id = id.clone();
+                    let nom = jarvis_data::arr(self.jd.get("memoire"), "noeuds").iter().find(|n| jarvis_data::s(n, "id") == id).map(|n| jarvis_data::s(n, "nom").to_string()).unwrap_or_default();
+                    self.ui.mem_edit = Some(id);
+                    self.start_typing(InputFor::MemRename, nom);
+                }
+            }
+            // « Changer la couleur » : catégorie suivante pour tous les souvenirs cochés
+            Action::Ile(A_MEM_TYPE) => {
+                let ids = self.ui.mem_checked.clone();
+                let types = jarvis_data::MEM_TYPES;
+                let cur = jarvis_data::arr(self.jd.get("memoire"), "noeuds").iter().find(|n| ids.first().is_some_and(|i| i == jarvis_data::s(n, "id"))).map(|n| jarvis_data::s(n, "type").to_string()).unwrap_or_default();
+                let next = types[(types.iter().position(|t| *t == cur).map_or(0, |p| p + 1)) % types.len()];
+                self.ui.msg = format!("Catégorie : {next}");
+                self.jact("memoire", json!({"action": "modifier", "ids": ids, "type": next}));
+            }
+            Action::IleN(N_MEM_ROW, i) => {
+                let ui = &self.ui;
+                let id = jarvis_data::mem_rows(self.jd.get("memoire"), ui.mem_filter, ui.mem_sort, &ui.mem_search).get(i as usize).map(|n| jarvis_data::s(n, "id").to_string());
+                if let Some(id) = id {
+                    match self.ui.mem_checked.iter().position(|x| *x == id) {
+                        Some(p) => {
+                            self.ui.mem_checked.remove(p);
+                        }
+                        None => self.ui.mem_checked.push(id),
+                    }
+                    self.ui.mem_confirm = None;
+                    self.ui.mem_edit = None;
+                }
+            }
+            Action::IleN(N_MEM_PIN, i) => {
+                let ui = &self.ui;
+                let row = jarvis_data::mem_rows(self.jd.get("memoire"), ui.mem_filter, ui.mem_sort, &ui.mem_search).get(i as usize).map(|n| (jarvis_data::s(n, "id").to_string(), n["garde"].as_bool() == Some(true)));
+                if let Some((id, garde)) = row {
+                    self.ui.mem_checked.retain(|x| *x != id);
+                    self.jact("memoire", json!({"action": "modifier", "ids": [id], "garde": !garde}));
                 }
             }
             Action::Ile(A_MEM_CENTER) => {
@@ -2577,6 +2767,53 @@ impl App {
                     self.jact("parametres", json!({"cle": "voix", "valeur": next}));
                 }
             }
+            Action::IleN(N_SONS, _) => {
+                self.cfg.ile.sons = !self.cfg.ile.sons;
+                config::save(&self.cfg);
+                sys::son(if self.cfg.ile.sons { sys::Son::Allume } else { sys::Son::Eteint }, self.cfg.ile.sons_volume.max(0.3));
+            }
+            Action::IleN(N_SONS_VOL, dir) => {
+                let v = self.cfg.ile.sons_volume + if dir == 0 { -0.1 } else { 0.1 };
+                self.cfg.ile.sons_volume = (v * 10.0).round().clamp(0.0, 10.0) / 10.0;
+                config::save(&self.cfg);
+                self.bruit(sys::Son::Clic);
+            }
+            Action::IleN(N_EFFETS, _) => {
+                self.cfg.ile.effets = !self.cfg.ile.effets;
+                config::save(&self.cfg);
+            }
+            Action::IleN(N_IA_MODE, dir) => {
+                let c = &profils::CHOIX_MODELE;
+                let k = c.iter().position(|x| x.0 == self.cfg.ia_mode).unwrap_or(0) as i32;
+                self.cfg.ia_mode = c[((k + if dir == 0 { -1 } else { 1 }).rem_euclid(c.len() as i32)) as usize].0;
+                self.ia_change(false);
+            }
+            Action::IleN(N_PROFIL, dir) => {
+                let ids: Vec<&str> = std::iter::once("").chain(profils::PROFILS.iter().map(|p| p.id)).collect();
+                let k = ids.iter().position(|x| *x == self.cfg.profil).unwrap_or(0) as i32;
+                let n = ids.len() as i32;
+                self.cfg.profil = ids[((k + if dir == 0 { -1 } else { 1 }).rem_euclid(n)) as usize].to_string();
+                self.ia_change(true);
+            }
+            Action::IleN(N_DETECT, _) => {
+                self.ui.msg = "Je regarde ton PC (carte graphique, mémoire, processeur)…".into();
+                let (mode, manuel) = (self.cfg.ia_mode, self.cfg.profil.clone());
+                std::thread::spawn(move || {
+                    let m = detecter_materiel();
+                    let p = profils::par_id(&manuel).unwrap_or_else(|| profils::choisir(&m));
+                    ia::regler_mode(mode, p.id);
+                });
+            }
+            Action::IleN(N_PAI_TEXT, i) => {
+                let i = (i as usize).min(6);
+                let val = if i < 6 { self.cfg.pronote.pai.jours[i].clone() } else { self.cfg.pronote.pai.sans.clone() };
+                self.start_typing(InputFor::Pai(i), val);
+            }
+            Action::IleN(N_PAI_RESET, _) => {
+                self.cfg.pronote.pai.sautes.clear();
+                self.cfg.pronote.pai.remis.clear();
+                self.pai_change();
+            }
             Action::IleN(N_STARTUP, _) => {
                 let on = self.jd.get("parametres").and_then(|p| p["demarrage_windows"].as_bool()).unwrap_or(false);
                 self.jact("parametres", json!({"cle": "demarrage_windows", "valeur": !on}));
@@ -2625,6 +2862,7 @@ impl App {
 
     /// Ouvre la grande île (à la demande de Jarvis), sur une section.
     fn big_open(&mut self, section: &str) {
+        self.bruit(sys::Son::Deplie);
         let v = jarvis_data::section(section);
         if self.ile.is_none() {
             self.ile_set(true);
@@ -2649,6 +2887,7 @@ impl App {
     }
 
     fn big_close(&mut self) {
+        self.bruit(sys::Son::Replie);
         unsafe { KillTimer(self.main, T_BIG_WATCH) };
         let Some(st) = &mut self.ile else { return };
         if !st.big_force {
@@ -2685,7 +2924,14 @@ impl App {
     // ---------- Carte mentale : glisser, déplacer, zoomer ----------
 
     fn mem_active(&self) -> bool {
-        self.ile.as_ref().is_some_and(|s| s.view == island::View::Memory && (s.want || s.big_force))
+        !self.ui.mem_list && self.ile.as_ref().is_some_and(|s| s.view == island::View::Memory && (s.want || s.big_force))
+    }
+
+    /// Liste de la mémoire : retour en haut (nouveau filtre, tri ou recherche).
+    fn mem_scroll_top(&mut self) {
+        if let Some(st) = &mut self.ile {
+            st.scroll = 0;
+        }
     }
 
     /// Bouton enfoncé sur la carte : on retient le souvenir pris (ou la vue). `true` = capture de la souris.
@@ -2803,24 +3049,44 @@ impl App {
                 sys::log(&format!("API : question de {}", if source.is_empty() { "?" } else { &source }));
                 self.ai_ask(texte, Origin::Api(tx));
             }
-            api::ApiReq::Jarvis { etat, texte, question, reponse, duree } => {
+            api::ApiReq::Jarvis { etat, texte, question, reponse, duree, toi } => {
                 let e = etat.trim().to_lowercase().replace(['é', 'è'], "e");
-                if !e.is_empty() && !matches!(e.as_str(), "repos" | "ecoute" | "reflechit" | "parle") {
-                    let _ = tx.send((400, json!({"ok": false, "erreur": "etat doit valoir repos, ecoute, reflechit ou parle"}).to_string()));
+                if !e.is_empty() && !matches!(e.as_str(), "repos" | "ecoute" | "parole" | "reflechit" | "parle" | "parle_ecoute") {
+                    let _ = tx.send((400, json!({"ok": false, "erreur": "etat doit valoir repos, ecoute, parole, reflechit, parle ou parle_ecoute"}).to_string()));
                     return;
                 }
                 let now = std::time::Instant::now();
                 self.jarvis.seen = Some(now);
+                let avant_parle = island::parle(&self.jarvis.state);
+                if !toi.trim().is_empty() {
+                    // nouvelle phrase de l'utilisateur : nouvelle réponse
+                    self.jarvis.toi = toi.trim().to_string();
+                    self.jarvis.dit.clear();
+                    self.jarvis.said = None;
+                }
                 if !e.is_empty() {
                     if e != "repos" {
                         self.ile_wake();
+                    }
+                    let parle = island::parle(&e);
+                    if parle && !avant_parle {
+                        self.jarvis.dit.clear(); // il commence une réponse
+                    } else if avant_parle && !parle && self.jarvis.said.is_some() {
+                        // il a fini (ou on l'a coupé) : sa dernière phrase rejoint le reste de la réponse
+                        let fin = std::mem::take(&mut self.jarvis.text);
+                        jarvis_ajouter(&mut self.jarvis.dit, &fin);
+                        self.jarvis.said = None;
                     }
                     self.jarvis.state = e;
                     self.jarvis.at = Some(now);
                 }
                 if !texte.is_empty() {
+                    if island::parle(&self.jarvis.state) && avant_parle && self.jarvis.said.is_some() && self.jarvis.text != texte {
+                        let avant = std::mem::take(&mut self.jarvis.text);
+                        jarvis_ajouter(&mut self.jarvis.dit, &avant); // phrase précédente, dite en entier
+                    }
                     self.jarvis.text = texte;
-                    self.jarvis.said = (duree > 0.0 && self.jarvis.state == "parle").then_some((now, duree.min(120.0)));
+                    self.jarvis.said = (duree > 0.0 && island::parle(&self.jarvis.state)).then_some((now, duree.min(120.0)));
                     if self.jarvis.said.is_some() {
                         unsafe { SetTimer(self.main, T_JARVIS_SAY, 90, None) };
                     }
@@ -2953,6 +3219,40 @@ impl App {
                 self.refresh_weather();
                 ok(&tx, json!({"ok": true}));
             }
+            api::ApiReq::IaModele { choix } => match profils::mode_depuis(&choix) {
+                Some(m) => {
+                    self.cfg.ia_mode = m;
+                    self.ia_change(false);
+                    let nom = profils::CHOIX_MODELE.iter().find(|c| c.0 == m).map(|c| c.1).unwrap_or("");
+                    let manque = if m != 2 && !ia::cle_nvidia() { " Il manque ta clé NVIDIA : ajoute-la dans Paramètres, IA." } else { "" };
+                    ok(&tx, json!({"ok": true, "dire": format!("C'est fait : {nom}.{manque}")}));
+                }
+                None => ok(&tx, json!({"ok": false, "erreur": "Je peux prendre : le plus fort, le rapide qui voit les images, le très rapide, celui de ce PC, ou auto."})),
+            },
+            api::ApiReq::Pai { jour, matiere, heure, sauter } => match pai::lire_date(&jour, Local::now().date_naive()) {
+                None => ok(&tx, json!({"ok": false, "erreur": "Quel jour ? Par exemple « demain » ou « lundi »."})),
+                Some(d) => {
+                    let mut p = self.cfg.pronote.pai.clone();
+                    let faits = pai::basculer(&mut p, &self.data.pronote, d, &matiere, pai::lire_heure(&heure), sauter);
+                    if faits.is_empty() {
+                        ok(&tx, json!({"ok": false, "erreur": format!("Je ne trouve pas ce cours le {} dans Pronote.", d.format("%d/%m"))}));
+                    } else {
+                        self.cfg.pronote.pai = p;
+                        self.pai_change();
+                        let quoi = if sauter { "tu ne vas pas à" } else { "tu vas à" };
+                        ok(&tx, json!({"ok": true, "dire": format!("C'est noté : {quoi} {}.", faits.join(", "))}));
+                    }
+                }
+            },
+            api::ApiReq::Dnd { on } => {
+                if let Some(on) = on {
+                    if self.cfg.ile.dnd != on {
+                        self.cfg.ile.dnd = on;
+                        self.save_soon();
+                    }
+                }
+                ok(&tx, json!({"ok": true, "actif": self.cfg.ile.dnd}));
+            }
             api::ApiReq::Quit => {
                 ok(&tx, json!({"ok": true}));
                 unsafe { PostMessageW(self.main, WM_APP_QUIT, 0, 0) };
@@ -3011,11 +3311,11 @@ impl App {
             json!({"connecte": false})
         } else {
             let tomorrow = today + chrono::Duration::days(1);
+            // dans l'ordre de la journée ; PAI : « n_y_va_pas » = la raison, « perso » = créneau à lui
             let cours = |d: chrono::NaiveDate| {
-                p.lessons
-                    .iter()
-                    .filter(|l| l.start.date() == d)
-                    .map(|l| json!({"debut": l.start.format("%H:%M").to_string(), "fin": l.end.format("%H:%M").to_string(), "matiere": l.subject, "salle": l.room, "prof": l.teacher, "annule": l.bad(), "statut": l.status}))
+                p.lessons_on(d)
+                    .into_iter()
+                    .map(|l| json!({"debut": l.start.format("%H:%M").to_string(), "fin": l.end.format("%H:%M").to_string(), "matiere": l.subject, "salle": l.room, "prof": l.teacher, "annule": l.bad(), "statut": l.status, "n_y_va_pas": l.manque, "perso": l.perso}))
                     .collect::<Vec<_>>()
             };
             json!({
@@ -3024,7 +3324,12 @@ impl App {
                 "prochain_cours": p.next(now).0.map(|l| json!({"matiere": l.subject, "debut": l.start.format("%H:%M").to_string(), "dans": widgets::countdown_txt(l, now)})),
                 "cours_aujourdhui": cours(today),
                 "cours_demain": cours(tomorrow),
-                "devoirs": p.homework.iter().filter(|h| h.due >= today).take(20).map(|h| json!({"matiere": h.subject, "pour": h.due.format("%Y-%m-%d").to_string(), "pour_quand": widgets::day_label(h.due, today), "texte": h.text, "fait": h.done})).collect::<Vec<_>>(),
+                // les 7 prochains jours (les jours sans cours sont sautés) : l'IA ne devine plus rien
+                "semaine": (0..8).map(|k| today + chrono::Duration::days(k)).filter(|d| !p.lessons_on(*d).is_empty())
+                    .map(|d| json!({"date": d.format("%Y-%m-%d").to_string(), "jour": widgets::day_label(d, today), "cours": cours(d)}))
+                    .collect::<Vec<_>>(),
+                "devoirs": p.homework.iter().filter(|h| h.due >= today).take(20).map(|h| json!({"matiere": h.subject, "pour": h.due.format("%Y-%m-%d").to_string(), "pour_quand": widgets::day_label(h.due, today), "texte": h.text, "fait": h.done, "cours_manque": pai::va_au_cours(p, h.due, &h.subject) == Some(false)})).collect::<Vec<_>>(),
+                "pai": !self.cfg.pronote.pai.vide(),
                 // Notes masquées dans les réglages de l'île : Jarvis ne les reçoit pas non plus.
                 "notes": p.grades.iter().take(if self.cfg.ile.show_grades { 5 } else { 0 }).map(|g| json!({"matiere": g.subject, "note": format!("{}/{}", pronote::grade_txt(&g.value), g.out_of), "moyenne_classe": g.class_avg, "coef": g.coef, "date": g.date.format("%Y-%m-%d").to_string()})).collect::<Vec<_>>(),
                 "moyenne_generale": if self.cfg.ile.show_grades { json!(p.overall) } else { serde_json::Value::Null },
@@ -3228,6 +3533,42 @@ impl App {
         self.save_soon();
         self.ile_anim();
         self.ile_render();
+    }
+}
+
+/// Détection du matériel gardée dans materiel.txt (dossier de la barre).
+fn materiel_garde() -> Option<profils::Materiel> {
+    std::fs::read_to_string(config::dir().join("materiel.txt")).ok().and_then(|t| profils::depuis_texte(&t))
+}
+
+/// Regarde le PC (1 à 2 s), garde le résultat dans materiel.txt et pour l'affichage.
+fn detecter_materiel() -> profils::Materiel {
+    let m = profils::detecter();
+    let _ = std::fs::write(config::dir().join("materiel.txt"), profils::vers_texte(&m));
+    profils::retenir(m.clone());
+    m
+}
+
+/// Profil en service : celui choisi à la main, sinon celui qui va avec le PC détecté (« moyen » en attendant).
+fn profil_en_service(cfg: &config::Config) -> &'static profils::Profil {
+    profils::par_id(&cfg.profil)
+        .or_else(|| profils::materiel_connu().map(|m| profils::choisir(&m)))
+        .unwrap_or(&profils::PROFILS[2])
+}
+
+/// Ajoute une phrase dite par Jarvis à sa réponse en cours (on ne garde que la fin, l'île n'en montre qu'une ligne).
+fn jarvis_ajouter(dit: &mut String, phrase: &str) {
+    let phrase = phrase.trim();
+    if phrase.is_empty() {
+        return;
+    }
+    if !dit.is_empty() {
+        dit.push(' ');
+    }
+    dit.push_str(phrase);
+    let n = dit.chars().count();
+    if n > 600 {
+        *dit = dit.chars().skip(n - 600).collect();
     }
 }
 
@@ -3737,6 +4078,8 @@ unsafe extern "system" fn ile_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let (x, y) = xy(lp);
                 with_app(|a| a.mem_move(x, y));
             }
+            let (mx, my) = xy(lp);
+            with_app(|a| a.ile_survol(mx, my));
             with_app(|a| a.ile_mouse_move());
             return 0;
         }
@@ -3745,6 +4088,8 @@ unsafe extern "system" fn ile_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             with_app(|a| {
                 if let Some(st) = &mut a.ile {
                     st.tracking = false;
+                    st.souris = None;
+                    st.survol = None;
                 }
                 a.ile_hover(false);
             });
@@ -4012,6 +4357,7 @@ unsafe fn run(ile: Option<bool>) {
     // Givre (les widgets du bureau) est une appli à part : Jarvis ne le ferme pas et n'affiche pas de widgets.
     let first_run = !config::exists();
     let mut cfg = config::load();
+    pai::regler(&cfg.pronote.pai);
     if !test {
         sys::autostart_one_app(jarvis_link::find_exe(&cfg.ile.jarvis_path));
     }
@@ -4069,6 +4415,20 @@ unsafe fn run(ile: Option<bool>) {
     }
     let api_port = Arc::new(AtomicU32::new(if cfg.ile.api_on { cfg.ile.api_port.round() as u32 } else { 0 }));
     ia::charger(&cfg.mail.ollama_url);
+    // profil matériel : la détection est gardée dans materiel.txt ; la 1re fois, on regarde le PC (hors de l'interface)
+    match materiel_garde() {
+        Some(m) => profils::retenir(m),
+        None => {
+            let (mode, manuel) = (cfg.ia_mode, cfg.profil.clone());
+            std::thread::spawn(move || {
+                let m = detecter_materiel();
+                let p = profils::par_id(&manuel).unwrap_or_else(|| profils::choisir(&m));
+                ia::regler_mode(mode, p.id);
+                sys::log(&format!("profil du PC : {} ({})", p.nom, profils::resume(&m)));
+            });
+        }
+    }
+    ia::regler_mode(cfg.ia_mode, profil_en_service(&cfg).id);
     cerveau::init(out.clone());
     api::spawn(out.clone(), api_port.clone());
     // téléphone Android : le port 47803 n'est ouvert que si un téléphone est déjà relié (ou pendant l'appairage)

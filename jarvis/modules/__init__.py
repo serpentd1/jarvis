@@ -32,6 +32,10 @@ class Resultat:
     ok: bool = True
     confirmer: Callable | None = None          # si présent : « dire » est une question oui/non
     annuler: str = "D'accord, j'annule."
+    # Données pour l'IA (résultats web, texte d'une page…) : le cerveau les lui renvoie, et c'est elle qui
+    # rédige la réponse parlée (2e tour). « dire » ne sert alors que si l'IA ne répond pas.
+    pour_ia: str = ""
+    images: list = field(default_factory=list)  # images en base64 (JPEG ou PNG) montrées à l'IA au 2e tour
 
 
 @dataclass

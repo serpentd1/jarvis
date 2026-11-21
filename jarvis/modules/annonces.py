@@ -86,7 +86,8 @@ def installer(ctx, reg):
             for n in nouvelles:
                 dernier = max(dernier, n.get("id", 0))
             dernier = max(dernier, r.get("dernier", dernier))
-            if not cfg["actif"] or dans_creneau(cfg["ne_pas_deranger"]):
+            if (not cfg["actif"] or dans_creneau(cfg["ne_pas_deranger"])
+                    or getattr(ctx, "concentration_jusqua", 0) > time.time()):     # mode concentration
                 continue
             a_dire = [n for n in nouvelles if a_annoncer(cfg, n)]
             for n in a_dire[:MAX_PAR_TOUR]:

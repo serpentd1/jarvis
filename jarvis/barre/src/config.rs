@@ -222,11 +222,13 @@ pub struct PronoteCfg {
     pub n_hw: bool,
     pub n_cancel: bool,
     pub google: bool,
+    /// PAI : mon emploi du temps à moi (voir pai.rs).
+    pub pai: crate::pai::Pai,
 }
 
 impl Default for PronoteCfg {
     fn default() -> Self {
-        Self { on: true, next: true, homework: true, grades: true, info: true, n_grade: true, n_hw: true, n_cancel: true, google: false }
+        Self { on: true, next: true, homework: true, grades: true, info: true, n_grade: true, n_hw: true, n_cancel: true, google: false, pai: Default::default() }
     }
 }
 
@@ -463,6 +465,11 @@ pub struct IleCfg {
     /// Petit son doux à l'ouverture (nouvelle clé : l'ancienne « open_sound » est ignorée).
     #[serde(rename = "son_ouverture_doux")]
     pub open_sound: bool,
+    /// Petits sons de verre sur les boutons (idées 1 à 10), leur volume (0 à 1, plus bas après 21 h),
+    /// et l'onde au clic + la lueur au survol.
+    pub sons: bool,
+    pub sons_volume: f32,
+    pub effets: bool,
     // --- options rigolotes ---
     pub rainbow: bool,
     pub disco: bool,
@@ -655,6 +662,9 @@ impl Default for IleCfg {
             bounce: true,
             breathe: false,
             open_sound: false,
+            sons: true,
+            sons_volume: 0.5,
+            effets: true,
             rainbow: false,
             disco: false,
             confetti: true,
@@ -679,6 +689,10 @@ pub struct Draft {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
+    /// Mode de l'IA : 0 auto (ultra performant s'il y a une clé NVIDIA), 1 ultra performant, 2 ultra léger.
+    pub ia_mode: u8,
+    /// Profil matériel choisi à la main (voir profils.rs) ; vide = celui trouvé par la détection.
+    pub profil: String,
     pub mail: MailCfg,
     pub music: bool,
     pub discord: DiscordCfg,
@@ -757,6 +771,8 @@ fn merge_givre(c: Config) -> Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            ia_mode: 0,
+            profil: String::new(),
             mail: MailCfg::default(),
             music: true,
             discord: DiscordCfg::default(),

@@ -6,6 +6,7 @@
 """
 import asyncio
 import logging
+import re
 from datetime import timedelta
 
 from . import Resultat, nombre
@@ -91,6 +92,67 @@ def volume_windows(action: str, valeur=None):
         comtypes.CoUninitialize()
 
 
+# ── volume d'une seule appli (mélangeur de volume de Windows) ────────────────
+
+# ce qu'on dit -> morceaux du nom du programme (chrome.exe, Discord.exe, Spotify.exe…)
+APPLIS_SON = {
+    "chrome": ["chrome"], "google chrome": ["chrome"], "youtube": ["chrome", "msedge", "firefox"],
+    "le navigateur": ["chrome", "msedge", "firefox", "opera", "brave"], "edge": ["msedge"], "firefox": ["firefox"],
+    "discord": ["discord"], "spotify": ["spotify"], "deezer": ["deezer"], "vlc": ["vlc"], "teams": ["teams"],
+    "whatsapp": ["whatsapp"], "steam": ["steam"], "roblox": ["roblox"], "minecraft": ["javaw", "minecraft"],
+    "le jeu": ["roblox", "javaw", "minecraft", "fortnite", "valorant", "steam"],
+    "la musique": ["spotify", "deezer", "applemusic", "itunes", "musicbee", "vlc"],
+}
+APPLIS_SON["musique"] = APPLIS_SON["la musique"]
+APPLIS_SON["jeu"] = APPLIS_SON["le jeu"]
+APPLIS_SON["navigateur"] = APPLIS_SON["le navigateur"]
+
+
+def morceaux_appli(appli: str) -> list[str]:
+    from . import normaliser
+    a = normaliser(appli or "")
+    a = re.sub(r"^(?:le son (?:de |du )?|le volume (?:de |du )?|de |du |d'|l'?\s?appli )", "", a).strip()
+    return APPLIS_SON.get(a) or APPLIS_SON.get(a.removeprefix("le ").removeprefix("la ")) or ([a.replace(" ", "")] if a else [])
+
+
+def volume_appli_windows(appli: str, action: str, valeur=None) -> str:
+    """Change le volume d'une appli (Chrome, Discord, Spotify…) sans toucher aux autres."""
+    import comtypes
+    from pycaw.pycaw import AudioUtilities
+    morceaux = morceaux_appli(appli)
+    comtypes.CoInitialize()
+    try:
+        sessions = []
+        for s in AudioUtilities.GetAllSessions():
+            if s.Process is None:
+                continue
+            nom = s.Process.name().lower().removesuffix(".exe")
+            if any(m and m in nom for m in morceaux):
+                sessions.append(s)
+        if not sessions:
+            return ""
+        vols = [s.SimpleAudioVolume for s in sessions]
+        actuel = round(max(v.GetMasterVolume() for v in vols) * 100)
+        if action == "niveau":
+            return f"{appli} est à {actuel} %."
+        if action in ("couper", "remettre"):
+            for v in vols:
+                v.SetMute(1 if action == "couper" else 0, None)
+            return f"{appli} est coupé." if action == "couper" else f"Le son de {appli} est remis."
+        if action in ("monter", "baisser"):
+            pas = float(valeur) if valeur else 25
+            cible = actuel + pas if action == "monter" else actuel - pas
+        else:
+            cible = float(valeur if valeur is not None else actuel)
+        cible = max(0, min(100, cible))
+        for v in vols:
+            v.SetMute(0, None)
+            v.SetMasterVolume(cible / 100, None)
+        return f"{appli} à {round(cible)} %."
+    finally:
+        comtypes.CoUninitialize()
+
+
 # ── module ───────────────────────────────────────────────────────────────────
 
 def installer(ctx, reg):
@@ -143,6 +205,41 @@ def installer(ctx, reg):
               {"action": {"type": "string", "enum": ["monter", "baisser", "regler", "couper", "remettre", "niveau"]},
                "valeur": {"type": "number", "description": "en pour cent : de combien monter/baisser, ou niveau voulu"}},
               ["action"], volume)
+
+    def volume_appli(appli: str, action: str, valeur: float = None):
+        nom = (appli or "").strip()
+        try:
+            dit = volume_appli_windows(nom.capitalize(), action, valeur)
+        except Exception:  # noqa: BLE001
+            log.exception("volume de %s", nom)
+            return Resultat(f"Je n'arrive pas à changer le volume de {nom}.", ok=False)
+        if not dit:
+            return Resultat(f"{nom.capitalize()} ne fait pas de son en ce moment : je ne le trouve pas dans le "
+                            "mélangeur de volume.", ok=False)
+        return Resultat(dit)
+
+    reg.outil("volume_appli", "Change le volume d'UNE application seulement (Chrome, Discord, Spotify, Deezer, un "
+              "jeu…), sans toucher au son des autres. Ex. « baisse Chrome, laisse la musique ».",
+              {"appli": "l'application (chrome, discord, spotify, la musique, le jeu…)",
+               "action": {"type": "string", "enum": ["monter", "baisser", "regler", "couper", "remettre", "niveau"]},
+               "valeur": {"type": "number", "description": "en pour cent : de combien monter/baisser, ou niveau voulu"}},
+              ["appli", "action"], volume_appli)
+    applis_son = "|".join(sorted((re.escape(k) for k in APPLIS_SON), key=len, reverse=True))
+
+    def regle_volume_appli(m, _t):
+        verbe = m["v"]
+        action = ("baisser" if verbe in ("baisse", "diminue") else "monter" if verbe in ("monte", "augmente")
+                  else "couper" if verbe in ("coupe", "mute") else "remettre" if verbe.startswith("remet") else "regler")
+        n = nombre(m["n"]) if m["n"] else None
+        if action == "regler" and n is None:
+            return None                       # « mets la musique » : c'est pour en écouter, pas le volume
+        if m["app"] in ("la musique", "musique") and action in ("couper", "remettre"):
+            return [("media", {"action": "pause" if action == "couper" else "lecture"})]
+        return [("volume_appli", {"appli": m["app"], "action": action, **({"valeur": n} if n is not None else {})})]
+
+    reg.regle(rf"^(?P<v>baisse|diminue|monte|augmente|coupe|mute|remets?|mets?|regle)(?: un peu)?(?: le son| le volume)?"
+              rf"(?: (?:de|du|sur|d'))? ?(?P<app>{applis_son})(?: a (?P<n>[a-z0-9 ]+?)(?: pour ?cent| %)?)?"
+              r"(?:(?: et| mais)? (?:laisse|garde|sans toucher|pas).*)?$", regle_volume_appli, priorite=9)
 
     # ── raccourcis sans IA ──
     objet = r"(?: (?:la |le |cette |ma )?(?:video|musique|chanson|film|serie|episode|youtube|spotify))?"

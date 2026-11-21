@@ -2,10 +2,12 @@
 import difflib
 import json
 import logging
+import os
 import random
 import re
 import subprocess
 import threading
+from pathlib import Path
 import time
 
 import psutil
@@ -103,6 +105,13 @@ def installer(ctx, reg):
 
     def lancer_application(nom: str):
         trouve = index.chercher(nom)
+        if not trouve and normaliser(nom) in ("chrome", "google chrome", "navigateur", "internet", "le navigateur"):
+            # Chrome n'est pas toujours dans le menu Démarrer : on le lance directement
+            for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")):
+                exe = Path(base or "") / "Google" / "Chrome" / "Application" / "chrome.exe"
+                if base and exe.is_file():
+                    subprocess.Popen([str(exe)], creationflags=SANS_FENETRE)
+                    return Resultat("J'ouvre Google Chrome.")
         if not trouve:
             site = getattr(ctx, "ouvrir_site", None)
             if site:

@@ -11,11 +11,15 @@ DONNEES = Path(os.environ.get("APPDATA", RACINE)) / "Jarvis"
 DEFAUTS = {
     "general": {"nom": "Jarvis", "phrase_demarrage": "Jarvis est prêt.", "lancer_givre": True,
                 "givre_exe": "", "givre_arguments": ""},
-    "micro": {"appareil": "", "seuil_activation": 0.5, "silence_fin": 1.4, "duree_max": 20,
+    "micro": {"appareil": "", "seuil_activation": 0.5, "silence_fin": 0.6, "duree_max": 20,
               "attente_debut": 6, "conversation": 5, "conversation_continue": True, "fin_conversation": 60,
               "volume_conversation": 350, "ding": True, "interrompre": True, "couper_en_parlant": True},
-    "transcription": {"modele": "parakeet", "appareil": "auto", "precision": "float16"},
-    "voix": {"voix": "siwis_hd", "modele": "", "lenteur": 1.0, "volume": 1.0},
+    "transcription": {"modele": "large-v3-turbo", "appareil": "auto", "precision": "int8_float16",
+                      "mots": "Jarvis, Pronote"},
+    "voix": {"voix": "denise", "modele": "", "lenteur": 1.0, "volume": 1.0},
+    "conversation": {"modele": "nvidia/nemotron-3.5-super-vl-120b-a12b", "mode_casque": False, "couper_apres": 0.3,
+                     "seuil_voix_pendant": 0.85, "journal_latence": True,
+                     "enregistrer_derniere_phrase": False},
     # L'IA se choisit maintenant dans les réglages de la barre (clic droit, Paramètres, IA) : LM Studio sur le PC
     # d'abord (gratuit), ou une clé d'API gratuite ou payante. ollama_url et modele ne servent plus qu'au
     # cerveau de secours, si la barre est absente.
@@ -31,6 +35,11 @@ DEFAUTS = {
     "mise_a_jour": {"auto": True, "depot": "", "verifier_toutes_les_heures": 6},
     "applis": {},
     "sites": {},
+    # « trouve mon exposé d'histoire » : Jarvis ne cherche QUE dans ces dossiers (noms connus ou chemins complets)
+    "fichiers": {"dossiers": ["bureau", "documents", "telechargements", "images"], "profondeur": 6},
+    # mode concentration : durée par défaut (minutes) et ce qu'il ferme
+    "concentration": {"minutes": 25, "fermer_sites": ["youtube", "discord", "tiktok", "instagram", "netflix", "twitch"],
+                      "fermer_applis": ["discord"]},
 }
 
 
@@ -80,3 +89,19 @@ def charger() -> dict:
         with open(FICHIER_CONFIG, "rb") as f:
             lu = tomllib.load(f)
     return {section: {**valeurs, **lu.get(section, {})} for section, valeurs in DEFAUTS.items()}
+
+
+PROMPT = RACINE / "prompt-systeme.txt"
+PROMPT_DEFAUT = RACINE / "prompt-systeme.defaut.txt"
+
+
+def prompt_systeme() -> str:
+    """Le prompt système de l'IA (prompt-systeme.txt, modifiable ; relu à chaque question).
+    Les lignes qui commencent par # sont des commentaires. Fichier absent : copié depuis prompt-systeme.defaut.txt."""
+    try:
+        if not PROMPT.is_file() and PROMPT_DEFAUT.is_file():
+            PROMPT.write_text(PROMPT_DEFAUT.read_text(encoding="utf-8"), encoding="utf-8")
+        lignes = PROMPT.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(l for l in lignes if not l.lstrip().startswith("#")).strip()

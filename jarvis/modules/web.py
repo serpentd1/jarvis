@@ -1,4 +1,5 @@
 """Sites web et recherches : « ouvre YouTube », « cherche des chats sur YouTube »."""
+import json
 import logging
 import os
 import re
@@ -15,6 +16,42 @@ RECHERCHES = {
     "images": "https://www.google.com/search?tbm=isch&q={}",
     "maps": "https://www.google.com/maps/search/{}",
 }
+# sites qu'on ferme par leurs onglets même s'ils ne sont pas dans [sites] de config.toml
+CONNUS = {"youtube", "pronote", "netflix", "twitch", "gmail", "instagram", "tiktok", "google", "wikipedia",
+          "chatgpt", "ent", "vinted", "amazon", "outlook", "hotmail", "twitter", "facebook", "reddit"}
+SUR_CHROME = re.compile(r" (?:sur|dans|avec|en) (?:google )?chrome$")
+NAVIGATEUR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/131.0 Safari/537.36")
+# Dans la page de résultats de YouTube, les vraies vidéos sont des « videoRenderer » ; les pubs sont des
+# « adSlotRenderer » / « promotedVideoRenderer » et les Shorts des « reelItemRenderer » : on ne les prend pas.
+VIDEO = re.compile(r'"videoRenderer":\{"videoId":"(?P<id>[\w-]{11})".{0,3000}?"title":\{"runs":\[\{"text":"(?P<titre>(?:[^"\\]|\\.)*)"',
+                   re.S)
+
+
+def premieres_videos(html: str, n: int = 5) -> list[tuple[str, str]]:
+    """[(id, titre)] des premières vraies vidéos (sans pubs ni Shorts) d'une page de résultats YouTube."""
+    vus, res = set(), []
+    for m in VIDEO.finditer(html or ""):
+        if m["id"] in vus:
+            continue
+        vus.add(m["id"])
+        try:
+            titre = json.loads(f'"{m["titre"]}"')
+        except ValueError:
+            titre = m["titre"]
+        res.append((m["id"], titre))
+        if len(res) >= n:
+            break
+    return res
+
+
+def chercher_youtube(requete: str) -> list[tuple[str, str]]:
+    import requests
+    r = requests.get("https://www.youtube.com/results", params={"search_query": requete, "hl": "fr"},
+                     headers={"User-Agent": NAVIGATEUR, "Accept-Language": "fr-FR,fr;q=0.9"},
+                     cookies={"CONSENT": "YES+cb", "SOCS": "CAI"}, timeout=8)
+    r.raise_for_status()
+    return premieres_videos(r.text)
 
 
 def installer(ctx, reg):
@@ -22,8 +59,12 @@ def installer(ctx, reg):
 
     def url_de(site: str):
         cle = normaliser(site).removeprefix("le site ").removeprefix("site ").strip()
+        cle = SUR_CHROME.sub("", cle).strip()      # « youtube sur chrome » -> « youtube »
+        site = re.sub(r"\s+(?:sur|dans|avec|en)\s+(?:google\s+)?chrome\s*$", "", site.strip(), flags=re.I)
         if cle in sites:
             return sites[cle]
+        if re.match(r"^https?://\S+$", site.strip()):
+            return site.strip()                 # adresse complète (ex. un lien trouvé par web_search) : telle quelle
         if re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+(/\S*)?", site.strip().lower()):
             return "https://" + site.strip().lower().removeprefix("https://").removeprefix("http://")
         return None
@@ -43,9 +84,10 @@ def installer(ctx, reg):
             if r.get("ok"):
                 log.info("site déjà ouvert : %s", url)
                 return Resultat(f"{site.strip()} est déjà ouvert : je te remets dessus.")
-        os.startfile(url)
+        ouvrir_url(url)
         log.info("site : %s", url)
-        return Resultat(f"J'ouvre {site.strip()}.")
+        nom = adresse.netloc.removeprefix("www.") if re.match(r"^https?://", site.strip()) else site.strip()
+        return Resultat(f"J'ouvre {nom}.")
 
     ctx.ouvrir_site = ouvrir_site     # utilisé par « lance … » quand ce n'est pas une application
 
@@ -55,6 +97,12 @@ def installer(ctx, reg):
         if pont is None or not pont.connecte:
             return {"ok": False, "erreur": "extension"}
         return pont.commande({"commande": commande, **params}, delai)
+
+    def ouvrir_url(url: str):
+        """Dans Chrome, par l'extension (nouvel onglet, Chrome devant) ; sinon dans le navigateur par défaut."""
+        if commande_onglet("ouvrir", url=url).get("ok"):
+            return
+        os.startfile(url)
 
     def echec_onglet(r: dict, cherche: str) -> Resultat:
         erreur = str(r.get("erreur", ""))
@@ -86,6 +134,12 @@ def installer(ctx, reg):
             n = r.get("fermes", 0)
             return Resultat("Aucun onglet en double." if not n else f"J'ai fermé {n} onglet{'s' if n > 1 else ''} en double.")
         r = commande_onglet("onglet_fermer", cherche=cherche, garder_un=bool(garder_un))
+        url = url_de(cherche)
+        if not r.get("ok") and url and r.get("erreur") != "extension":
+            # « pronote » : le titre de l'onglet ne dit pas toujours « Pronote », mais son adresse, oui
+            hote = urllib.parse.urlparse(url).netloc.removeprefix("www.")
+            if hote and hote != cherche:
+                r = commande_onglet("onglet_fermer", cherche=hote, garder_un=bool(garder_un))
         if not r.get("ok"):
             return echec_onglet(r, cherche)
         n = r.get("fermes", 0)
@@ -118,19 +172,78 @@ def installer(ctx, reg):
     def recherche_web(requete: str, ou: str = "google"):
         ou = normaliser(ou or "google")
         modele = next((v for k, v in RECHERCHES.items() if k in ou), RECHERCHES["google"])
-        os.startfile(modele.format(urllib.parse.quote_plus(requete)))
+        ouvrir_url(modele.format(urllib.parse.quote_plus(requete)))
         nom = next((k for k in RECHERCHES if k in ou), "google").capitalize()
         return Resultat(f"Je cherche « {requete} » sur {nom}.")
 
-    reg.outil("ouvrir_site", "Ouvre un site web dans le navigateur (YouTube, Gmail, Netflix, Twitch… ou une adresse).",
+    reg.outil("ouvrir_site", "Ouvre un site web dans Chrome (YouTube, Gmail, Netflix, Twitch… ou une adresse complète).",
               {"site": "nom du site ou adresse"}, ["site"], ouvrir_site)
-    reg.outil("recherche_web", "Lance une recherche sur Internet.",
+    reg.outil("recherche_web", "Ouvre une recherche dans Chrome pour que l'utilisateur la voie (Google, YouTube…). "
+              "Pour trouver toi-même une réponse, utilise plutôt web_search.",
               {"requete": "ce qu'il faut chercher",
                "ou": {"type": "string", "enum": list(RECHERCHES), "description": "où chercher (google par défaut)"}},
               ["requete"], recherche_web)
 
+    def jouer_youtube(recherche: str = ""):
+        """La première vraie vidéo (pas une pub, pas un Short) d'une recherche YouTube, ouverte directement.
+        Sans recherche : celle de la page de résultats YouTube ouverte dans Chrome."""
+        recherche = (recherche or "").strip()
+        if not recherche:
+            r = commande_onglet("onglet_texte", delai=6)
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(str(r.get("url", ""))).query).get("search_query")
+            if not q:
+                return Resultat("Dis-moi quelle vidéo chercher, par exemple : mets la première vidéo de Squeezie "
+                                "sur YouTube.", ok=False)
+            recherche = q[0]
+        try:
+            videos = chercher_youtube(recherche)
+        except Exception as e:  # noqa: BLE001
+            log.warning("YouTube « %s » : %s", recherche, e)
+            videos = []
+        if not videos:
+            ouvrir_url(RECHERCHES["youtube"].format(urllib.parse.quote_plus(recherche)))
+            return Resultat(f"Je n'arrive pas à lire les résultats de YouTube : je t'ouvre la recherche « {recherche} ».",
+                            ok=False)
+        vid, titre = videos[0]
+        ouvrir_url(f"https://www.youtube.com/watch?v={vid}")
+        log.info("YouTube « %s » -> %s", recherche, vid)
+        return Resultat(f"Je mets « {titre} » sur YouTube." if titre else "Je mets la première vidéo sur YouTube.")
+
+    reg.outil("jouer_youtube", "Ouvre directement la première VRAIE vidéo YouTube d'une recherche (en sautant les "
+              "publicités et les Shorts). Sans recherche : prend la page de résultats YouTube ouverte dans Chrome.",
+              {"recherche": "ce qu'il faut chercher sur YouTube (vide = la recherche déjà ouverte)"}, [], jouer_youtube)
+    reg.regle(r"^(?:mets?|met|lance|joue|ouvre|prends?|clique sur|choisis)(?: moi)? (?:la )?premiere video"
+              r"(?: qui n'?\s?est pas (?:une |de )?pub(?:licite)?| sans pub(?:licite)?| pas sponsorisee)?"
+              r"(?: (?:de|sur|pour|avec) (?P<q>.+?))?(?: sur youtube)?$",
+              lambda m, t: [("jouer_youtube", {"recherche": (m["q"] or "").strip()})], priorite=11)
+    reg.regle(r"^(?:mets?|met|lance|joue)(?: moi)? (?:la video |une video |la musique |le clip )?(?P<q>.+?) sur youtube$",
+              lambda m, t: [("jouer_youtube", {"recherche": m["q"]})], priorite=39)
+
     def regle_site(m, _texte):
         return [("ouvrir_site", {"site": m["site"]})] if url_de(m["site"]) else None
+
+    # « Lance YouTube sur Chrome » (passe avant les applis : sinon on ouvrait juste Chrome)
+    def regle_site_chrome(m, _texte):
+        if normaliser(m["site"]) in ("pronote", "mon pronote"):
+            return [("ouvrir_givre", {"quoi": "pronote"})]
+        return [("ouvrir_site", {"site": m["site"]})]
+
+    reg.regle(r"^(?:tu peux |peux tu )?(?:me )?(?:ouvre|ouvrir|va sur|vas sur|lance|lanche|lancer|mets?)(?: moi)? "
+              r"(?:le site )?(?P<site>.+?) (?:sur|dans|avec|en) (?:google )?chrome$", regle_site_chrome, priorite=30)
+
+    # « Ferme Pronote dans Chrome » / « ferme YouTube » (un site connu qui n'est pas une appli) : ferme ses onglets
+    reg.regle(r"^(?:tu peux |peux tu )?(?:ferme|fermer|quitte|quitter|enleve)(?: moi)? (?:le site |l'onglet )?"
+              r"(?P<q>.+?) (?:sur|dans|de) (?:google )?chrome$",
+              lambda m, t: [("fermer_onglet", {"cherche": m["q"]})], priorite=12)
+
+    def regle_fermer_site(m, _texte):
+        index = getattr(ctx, "index_applis", None)
+        if index and index.chercher(m["q"]):
+            return None                          # une vraie appli : fermer_application s'en occupe
+        return [("fermer_onglet", {"cherche": m["q"]})] if normaliser(m["q"]) in sites or m["q"] in CONNUS else None
+
+    reg.regle(r"^(?:tu peux |peux tu )?(?:ferme|fermer|quitte|quitter)(?: moi)? (?P<q>[a-z0-9' ]+)$",
+              regle_fermer_site, priorite=82)
 
     def regle_recherche(m, texte):
         # on reprend la recherche dans le texte d'origine (avec les accents)

@@ -33,7 +33,7 @@ def installer(ctx, reg):
         if r.get("confirmer"):
             id_ = int(r["confirmer"])
             return Resultat(dire, confirmer=lambda: confirmer(id_, True), annuler="D'accord, je ne touche à rien.")
-        return Resultat(dire, ok=bool(r.get("ok")))
+        return Resultat(dire, ok=bool(r.get("ok")), pour_ia=str(r.get("pour_ia") or ""))
 
     def appeler(nom, args):
         try:

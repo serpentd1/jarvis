@@ -13,7 +13,6 @@ AUCUNE_IA = ("Aucune IA ne répond. Ouvre LM Studio, ou ajoute une clé gratuite
 
 # (section, clé, type, libellé) : ce que la grande application peut modifier
 REGLAGES = [
-    ("cerveau", "modele", "modele", "Modèle d'IA"),
     ("transcription", "modele", "choix", "Transcription de ta voix"),
     ("micro", "seuil_activation", "nombre", "Sensibilité du « Hey Jarvis » (petit = réagit plus facilement)"),
     ("micro", "conversation", "nombre", "Écoute après sa réponse (secondes, 0 = non)"),
@@ -33,6 +32,9 @@ REGLAGES = [
 
 
 CHOIX = {("transcription", "modele"): stt.CHOIX}
+# Écrits par la barre quand on change le profil du PC (grande application › Paramètres), sans ligne à l'écran.
+CACHES = {("transcription", "appareil"), ("transcription", "precision")}
+WHISPER = ("tiny", "base", "small", "medium", "large-v3", "large-v3-turbo")
 
 
 def cible_transcription(demande: str, actuelle: str) -> str | None:
@@ -82,6 +84,10 @@ def installer(ctx, reg):
         actif = etat.get("actif")
         if not actif and not configures:
             return Resultat(AUCUNE_IA, ok=False)
+        # pour la conversation, c'est le modèle de config.toml ([conversation] modele) qui sert chez NVIDIA
+        conv = str(getattr(ctx, "cfg", {}).get("conversation", {}).get("modele", "")).strip()
+        if actif and conv and actif.startswith("NVIDIA"):
+            actif = f"NVIDIA · {conv}, dans le cloud de NVIDIA"
         phrase = f"Je me sers de {actif}." if actif else "Aucune IA n'est active en ce moment."
         if configures:
             liste = ", ".join(f"{f.get('nom')} ({'gratuit' if f.get('gratuit') else 'payant'})" for f in configures)
@@ -100,13 +106,16 @@ def installer(ctx, reg):
             if p.get("cle") == "voix" and p.get("valeur") in CATALOGUE and hasattr(ctx, "changer_voix"):
                 ctx.changer_voix(p["valeur"])
             elif (p.get("section"), p.get("cle")) == ("transcription", "modele") and hasattr(ctx, "changer_transcription"):
-                cible = cible_transcription(str(p.get("valeur", "")), ctx.transcription_actuelle())
+                v = str(p.get("valeur", ""))
+                cible = v if v in WHISPER else cible_transcription(v, ctx.transcription_actuelle())
                 if cible:
                     threading.Thread(target=ctx.changer_transcription, args=(cible, True), daemon=True).start()
             elif p.get("cle") == "demarrage_windows":
                 demarrage.activer(bool(p.get("valeur")))
             else:
                 r = next((r for r in REGLAGES if r[0] == p.get("section") and r[1] == p.get("cle")), None)
+                if not r and (p.get("section"), p.get("cle")) in CACHES:
+                    r = (p["section"], p["cle"])
                 if not r:
                     return {"ok": False, "erreur": "réglage inconnu"}
                 config.ecrire_valeur(r[0], r[1], p.get("valeur"))

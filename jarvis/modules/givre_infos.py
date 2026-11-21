@@ -85,6 +85,14 @@ def resume(e: dict) -> str:
             L.append(f"  ATTENTION : la connexion à Pronote ne marche plus ({p['erreur']}). Les données ci-dessous datent "
                      f"de la dernière mise à jour ({p.get('mis_a_jour') or '?'}) et peuvent être fausses aujourd'hui. "
                      "Pour la refaire : clic droit sur la barre, Paramètres, Comptes, Pronote (QR code).")
+        if p.get("pai"):
+            L.append("  PAI : l'utilisateur a un emploi du temps aménagé, rien qu'à lui. Les cours marqués « il n'y va pas » "
+                     "ont lieu pour sa classe mais PAS pour lui : ne lui dis jamais qu'il a ces cours, ne lui rappelle pas d'y "
+                     "aller, ne compte pas ses heures dessus. Pour un devoir d'un cours où il ne va pas, dis-le-lui (il devra "
+                     "peut-être récupérer le cours). Dans un résumé de journée, ne cite que les cours où il va.")
+        L.append("  RÈGLE : pour les cours et les devoirs, crois UNIQUEMENT ce qui suit (Pronote, à jour), jamais tes "
+                 "souvenirs. Chaque cours a sa vraie date : il n'y a pas de semaine A ou B à deviner. Un jour qui n'est "
+                 "pas dans la liste : dis que tu ne l'as pas, n'invente pas.")
         pc = p.get("prochain_cours")
         if pc:
             L.append(f"  Prochain cours : {pc.get('matiere')} à {pc.get('debut')} ({pc.get('dans', '')}).")
@@ -95,14 +103,29 @@ def resume(e: dict) -> str:
                     f"{c.get('debut')}-{c.get('fin')} {c.get('matiere')}"
                     + (f" salle {c['salle']}" if c.get("salle") else "")
                     + (" (ANNULÉ)" if c.get("annule") else (f" ({c['statut']})" if c.get("statut") else ""))
+                    + (f" (il n'y va pas : {c['n_y_va_pas']})" if c.get("n_y_va_pas") else "")
+                    + (" (créneau à lui, pas un cours)" if c.get("perso") else "")
                     for c in cours) + ".")
             else:
                 L.append(f"  {titre} : aucun cours.")
+        for j in p.get("semaine") or []:
+            va = [c for c in j.get("cours") or [] if not c.get("n_y_va_pas") and not c.get("annule")]
+            sans = [c for c in j.get("cours") or [] if c.get("n_y_va_pas")]
+            annules = [c for c in j.get("cours") or [] if c.get("annule") and not c.get("n_y_va_pas")]
+            ligne = f"  Emploi du temps du {j.get('jour')} ({date_fr(j.get('date'))}) : "
+            ligne += (", ".join(f"{c.get('debut')}-{c.get('fin')} {c.get('matiere')}"
+                                + (" (créneau à lui)" if c.get("perso") else "") for c in va) or "aucun cours pour lui")
+            if annules:
+                ligne += ". Annulés : " + ", ".join(f"{c.get('debut')} {c.get('matiere')}" for c in annules)
+            if sans:
+                ligne += ". Cours de sa classe où il ne va PAS (PAI) : " + ", ".join(f"{c.get('debut')} {c.get('matiere')}" for c in sans)
+            L.append(ligne + ".")
         devoirs = p.get("devoirs") or []
         if devoirs:
             L.append("  Devoirs à faire : " + " ; ".join(
                 f"{d.get('matiere')} pour {d.get('pour_quand') or ''} ({date_fr(d.get('pour'))}) : "
                 f"{str(d.get('texte', ''))[:160]}" + (" (déjà fait)" if d.get("fait") else "")
+                + (" (il ne va pas à ce cours : PAI, il n'y était peut-être pas)" if d.get("cours_manque") else "")
                 for d in devoirs[:12]) + ".")
         else:
             L.append("  Devoirs : rien à faire.")

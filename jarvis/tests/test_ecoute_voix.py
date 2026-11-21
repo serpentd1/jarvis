@@ -16,10 +16,20 @@ SILENCE = np.zeros(BLOC, np.int16)
 VOIX = (np.random.default_rng(1).standard_normal(BLOC) * 2500).astype(np.int16)
 
 
+class FausseVAD:
+    """Le détecteur de voix, pour les tests : un son fort = une voix."""
+    def reinitialiser(self):
+        pass
+
+    def proba(self, bloc):
+        return 1.0 if np.abs(bloc).mean() > 500 else 0.0
+
+
 def faux_micro(*morceaux):
     """morceaux : (bloc, secondes) -> un micro qui « entend » ces sons à la suite."""
     m = Micro.__new__(Micro)
     m.file, m._reste, m.freq_source = queue.Queue(), np.zeros(0, np.int16), FREQ
+    m.vad, m.anti_echo = FausseVAD(), None
     m.bruit = deque([11.0] * 25, maxlen=25)
     for bloc, secondes in morceaux:
         for _ in range(round(secondes * FREQ / BLOC)):
@@ -35,13 +45,20 @@ def test_attend_que_je_parle():
     # « Hey Jarvis »… 1, 2, 3… « lance Discord » : il attend 2,5 s sans couper
     audio = faux_micro((SILENCE, 2.5), (VOIX, 1.0), (SILENCE, 3)).enregistrer_commande()
     # L'attente avant la voix n'est plus conservée, contrairement au pré-déclencheur de 0,8 s.
-    assert 2.7 < duree(audio) < 3.4
+    # 0,8 s avant la voix + 1 s de voix + 0,6 s de silence (fin de phrase)
+    assert 2.0 < duree(audio) < 2.7
 
 
 def test_pause_au_milieu_de_la_phrase():
-    # une pause d'1 s au milieu ne coupe pas la phrase
-    audio = faux_micro((VOIX, 1.0), (SILENCE, 1.0), (VOIX, 1.0), (SILENCE, 3)).enregistrer_commande()
+    # une pause d'1 s au milieu ne coupe pas la phrase si silence_fin est plus long (réglage du micro)
+    audio = faux_micro((VOIX, 1.0), (SILENCE, 1.0), (VOIX, 1.0), (SILENCE, 3)).enregistrer_commande(silence_fin=1.4)
     assert duree(audio) > 4.2
+
+
+def test_fin_de_phrase_apres_600_ms():
+    # par défaut, 0,6 s de silence termine la phrase : Jarvis répond vite
+    audio = faux_micro((VOIX, 1.0), (SILENCE, 3)).enregistrer_commande()
+    assert duree(audio) < 2.3
 
 
 def test_un_clic_n_est_pas_de_la_voix():

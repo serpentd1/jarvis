@@ -11,9 +11,11 @@ from .journal import FICHIER as FICHIER_JOURNAL
 
 log = logging.getLogger("icone")
 COULEURS = {"chargement": (120, 120, 130), "repos": (40, 140, 255), "ecoute": (40, 205, 110),
-            "reflechit": (255, 160, 30), "parle": (170, 90, 255), "muet": (225, 55, 65)}
+            "reflechit": (255, 160, 30), "parle": (170, 90, 255), "muet": (225, 55, 65),
+            "parole": (20, 170, 90), "parle_ecoute": (255, 120, 40)}
 LIBELLES = {"chargement": "démarre…", "repos": "prêt", "ecoute": "t'écoute", "reflechit": "réfléchit",
-            "parle": "parle", "muet": "micro coupé"}
+            "parle": "parle", "muet": "micro coupé", "parole": "t'entend parler",
+            "parle_ecoute": "finit sa phrase et t'écoute"}
 
 
 def dessiner(couleur, taille=64) -> Image.Image:

@@ -66,6 +66,20 @@ pub const A_PN_OPEN: u8 = 49;
 pub const A_BIG_OPEN: u8 = 50;
 pub const A_PN_TOGGLE: u8 = 51;
 pub const A_MAIL_TOGGLE: u8 = 52;
+pub const A_HIST_CLEAR: u8 = 53;
+/// Tri de la mémoire : carte/liste, filtre, ordre, préparer le nettoyage, supprimer/garder la sélection,
+/// annuler le nettoyage, tout cocher, renommer, changer de catégorie, effacer la recherche.
+pub const A_MEM_MODE: u8 = 54;
+pub const A_MEM_FILTER: u8 = 55;
+pub const A_MEM_SORT: u8 = 56;
+pub const A_MEM_SUGG: u8 = 57;
+pub const A_MEM_DEL_SEL: u8 = 58;
+pub const A_MEM_KEEP: u8 = 59;
+pub const A_MEM_UNDO: u8 = 60;
+pub const A_MEM_ALL: u8 = 61;
+pub const A_MEM_RENAME: u8 = 62;
+pub const A_MEM_TYPE: u8 = 63;
+pub const A_MEM_SEARCH_CLEAR: u8 = 64;
 /// IleN : vue (n = View), devoir choisi, devoir fait, mail choisi, minuteur +n s, pause/suppression minuteur n, note choisie.
 pub const N_VIEW: u8 = 1;
 pub const N_HW: u8 = 2;
@@ -100,6 +114,19 @@ pub const N_SECTION: u8 = 31;
 pub const N_VOICE: u8 = 32;
 pub const N_STARTUP: u8 = 33;
 pub const N_ROUT_DEL: u8 = 34;
+/// Liste de la mémoire : cocher la ligne n, épingler (garder) la ligne n.
+pub const N_MEM_ROW: u8 = 35;
+pub const N_MEM_PIN: u8 = 36;
+/// Paramètres de la grande application réglés par la barre : mode de l'IA, profil du PC, détection, PAI.
+pub const N_IA_MODE: u8 = 37;
+pub const N_PROFIL: u8 = 38;
+pub const N_DETECT: u8 = 39;
+pub const N_PAI_TEXT: u8 = 40;
+pub const N_PAI_RESET: u8 = 41;
+/// Sons des boutons (oui / non), leur volume, l'onde au clic et la lueur au survol.
+pub const N_SONS: u8 = 42;
+pub const N_SONS_VOL: u8 = 43;
+pub const N_EFFETS: u8 = 44;
 
 /// Ce que vise le champ de saisie de l'île.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -120,8 +147,14 @@ pub enum InputFor {
     Relation,
     /// Code à 4 chiffres de Pronote.
     Pin,
+    /// Recherche dans la liste de la mémoire.
+    MemSearch,
+    /// Nouveau nom d'un souvenir.
+    MemRename,
     /// Réglage texte de Jarvis (n° dans la liste « reglages »).
     Setting(usize),
+    /// PAI : heures de cours d'un jour (0 = lundi … 5 = samedi), 6 = matières où il ne va pas.
+    Pai(usize),
 }
 
 impl InputFor {
@@ -139,6 +172,8 @@ impl InputFor {
             11 => InputFor::RoutineStep,
             12 => InputFor::Relation,
             13 => InputFor::Pin,
+            14 => InputFor::MemSearch,
+            15 => InputFor::MemRename,
             _ => InputFor::Chat,
         }
     }
@@ -158,6 +193,9 @@ impl InputFor {
             InputFor::RoutineStep => 11,
             InputFor::Relation => 12,
             InputFor::Pin => 13,
+            InputFor::Pai(_) => 16,
+            InputFor::MemSearch => 14,
+            InputFor::MemRename => 15,
         }
     }
 }
@@ -199,6 +237,7 @@ pub enum View {
     Batteries = 20,
     JSettings = 21,
     Accounts = 22,
+    History = 23,
 }
 
 impl View {
@@ -226,6 +265,7 @@ impl View {
             20 => View::Batteries,
             21 => View::JSettings,
             22 => View::Accounts,
+            23 => View::History,
             _ => View::Main,
         }
     }
@@ -305,10 +345,11 @@ pub enum Tab {
     Batteries,
     JSettings,
     Accounts,
+    History,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 21] = [Tab::Home, Tab::Jarvis, Tab::Music, Tab::Discord, Tab::Timers, Tab::Dnd, Tab::Notifs, Tab::Clips, Tab::School, Tab::Calendar, Tab::Mails, Tab::Phone, Tab::Tasks, Tab::Reminders, Tab::Habits, Tab::Routines, Tab::Memory, Tab::Pc, Tab::Batteries, Tab::JSettings, Tab::Accounts];
+    pub const ALL: [Tab; 22] = [Tab::Home, Tab::Jarvis, Tab::Music, Tab::Discord, Tab::Timers, Tab::Dnd, Tab::Notifs, Tab::Clips, Tab::School, Tab::Calendar, Tab::Mails, Tab::Phone, Tab::Tasks, Tab::Reminders, Tab::Habits, Tab::Routines, Tab::Memory, Tab::Pc, Tab::Batteries, Tab::JSettings, Tab::Accounts, Tab::History];
     pub fn view(self) -> View {
         match self {
             Tab::Home => View::Main,
@@ -332,6 +373,7 @@ impl Tab {
             Tab::Batteries => View::Batteries,
             Tab::JSettings => View::JSettings,
             Tab::Accounts => View::Accounts,
+            Tab::History => View::History,
         }
     }
     /// Onglet qui correspond à une page (les pages Devoirs / Notes vont avec « Pronote »).
@@ -358,6 +400,7 @@ impl Tab {
             View::Batteries => Tab::Batteries,
             View::JSettings => Tab::JSettings,
             View::Accounts => Tab::Accounts,
+            View::History => Tab::History,
         }
     }
     pub fn label(self) -> &'static str {
@@ -383,6 +426,7 @@ impl Tab {
             Tab::Batteries => "BATTERIES",
             Tab::JSettings => "RÉGLAGES",
             Tab::Accounts => "COMPTES",
+            Tab::History => "HISTORIQUE",
         }
     }
 }
@@ -755,11 +799,20 @@ pub struct Jarvis {
     pub micro: bool,
     /// Phrase que Jarvis est en train de dire : (début, durée en secondes).
     pub said: Option<(Instant, f64)>,
+    /// Ce que l'utilisateur vient de dire (transcription), affiché au-dessus de la réponse.
+    pub toi: String,
+    /// Les phrases déjà dites de la réponse en cours (ou de la dernière réponse), avant `text`.
+    pub dit: String,
+}
+
+/// Jarvis parle (seul, ou pendant que l'utilisateur lui parle par-dessus).
+pub fn parle(state: &str) -> bool {
+    state == "parle" || state == "parle_ecoute"
 }
 
 impl Default for Jarvis {
     fn default() -> Self {
-        Jarvis { state: "repos".into(), text: String::new(), at: None, seen: None, micro: true, said: None }
+        Jarvis { state: "repos".into(), text: String::new(), at: None, seen: None, micro: true, said: None, toi: String::new(), dit: String::new() }
     }
 }
 
@@ -781,11 +834,11 @@ pub fn karaoke(text: &str, avance: Option<(f64, f64)>, max_chars: usize) -> Stri
 impl Jarvis {
     /// Jarvis est en train de dire une phrase (elle s'affiche mot par mot).
     pub fn speaking(&self) -> bool {
-        self.state == "parle" && self.said.is_some_and(|(t, d)| t.elapsed().as_secs_f64() < d)
+        parle(&self.state) && self.said.is_some_and(|(t, d)| t.elapsed().as_secs_f64() < d)
     }
     /// Le texte à montrer : pendant que Jarvis parle, les mots apparaissent au rythme de sa voix.
     pub fn shown(&self) -> String {
-        let avance = self.said.filter(|_| self.state == "parle").map(|(t, d)| (t.elapsed().as_secs_f64() + 0.1, d));
+        let avance = self.said.filter(|_| parle(&self.state)).map(|(t, d)| (t.elapsed().as_secs_f64() + 0.1, d));
         karaoke(&self.text, avance, 70)
     }
     /// Jarvis fait quelque chose (écoute, réfléchit, parle) depuis moins de 2 minutes, et il est en ligne.
@@ -824,6 +877,10 @@ pub struct Island {
     pub toast: Option<(INotif, Instant)>,
     pub t0: Instant,
     pub confetti: Option<Instant>,
+    /// Souris sur l'île (lueur au survol) et dernier clic (onde de lumière), en pixels de la fenêtre.
+    pub souris: Option<(f32, f32)>,
+    pub survol: Option<usize>,
+    pub onde: Option<(f32, f32, Instant)>,
     /// Position de la fenêtre à l'écran (pour les yeux qui suivent la souris).
     pub win: (i32, i32),
     pub unseen: usize,
@@ -862,6 +919,9 @@ impl Island {
             toast: None,
             t0: Instant::now(),
             confetti: None,
+            souris: None,
+            survol: None,
+            onde: None,
             win: (0, 0),
             unseen: 0,
             slide: 0.0,

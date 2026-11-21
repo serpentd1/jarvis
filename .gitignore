@@ -15,6 +15,7 @@ google.json
 jarvis/a-ajouter.txt
 # Tes réglages perso (contacts WhatsApp…) : on publie config.defaut.toml à la place
 jarvis/config.toml
+jarvis/prompt-systeme.txt
 client_secret*.json
 *.ini
 

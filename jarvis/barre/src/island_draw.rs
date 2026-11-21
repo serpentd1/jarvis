@@ -160,7 +160,7 @@ pub fn target(r: &R) -> (Mode, f32, f32) {
             (c.pill_width + extra, c.pill_height)
         }
         Mode::Toast => (440.0, 68.0),
-        Mode::Jarvis => (420.0, 54.0),
+        Mode::Jarvis => (470.0, 64.0),
         Mode::Ring => (470.0, 118.0),
         Mode::Main | Mode::View if crate::island_big::is_big(r) => (crate::island_big::BIG_W, crate::island_big::BIG_H),
         Mode::Main | Mode::View if c.layout == 0 => (CARDS_W, CARDS_H),
@@ -189,6 +189,7 @@ pub fn fx_interval(r: &R) -> Option<u32> {
         || c.snow
         || (c.breathe && mode == Mode::Pill)
         || r.st.confetti.is_some_and(|t| t.elapsed().as_secs_f32() < 4.0)
+        || r.st.onde.is_some_and(|(_, _, t)| t.elapsed().as_secs_f32() < 0.5)
         || (open && c.weather_anim && (c.m_weather || c.layout == 0))
         || (open && c.clock_color == 2)
         || mode == Mode::Jarvis
@@ -383,19 +384,38 @@ pub(crate) fn src_color(s: Src) -> Rgba {
 pub(crate) fn jarvis_color(state: &str) -> Rgba {
     match state {
         "ecoute" => GREEN,
+        "parole" => Rgba::rgb8(48, 209, 160),
         "reflechit" => Rgba::rgb8(175, 82, 222),
         "parle" => Rgba::rgb8(10, 132, 255),
+        "parle_ecoute" => ORANGE,
         _ => Rgba(0.6, 0.6, 0.65, 1.0),
     }
 }
 
 pub(crate) fn jarvis_label(state: &str) -> &'static str {
     match state {
-        "ecoute" => "Jarvis écoute…",
+        "ecoute" => "À toi, je t'écoute",
+        "parole" => "Tu parles…",
         "reflechit" => "Jarvis réfléchit…",
         "parle" => "Jarvis parle",
+        "parle_ecoute" => "Je finis, je t'écoute",
         _ => "Jarvis en veille",
     }
+}
+
+/// Le texte qui tient dans `largeur` en gardant la FIN (les derniers mots dits), avec « … » devant si on a coupé.
+pub(crate) fn fit_fin(c: &mut Ctx, wt: Wt, taille: f32, texte: &str, largeur: f32) -> String {
+    if c.measure(wt, taille, texte) <= largeur {
+        return texte.to_string();
+    }
+    let mots: Vec<&str> = texte.split_whitespace().collect();
+    for debut in 1..mots.len() {
+        let t = format!("… {}", mots[debut..].join(" "));
+        if c.measure(wt, taille, &t) <= largeur {
+            return t;
+        }
+    }
+    c.fit(wt, taille, mots.last().copied().unwrap_or(""), largeur)
 }
 
 // ---------- Rendu ----------
@@ -525,7 +545,48 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
     if let Some(t0) = r.st.confetti {
         confetti(&mut pm, t0.elapsed().as_secs_f32(), s);
     }
+    // idée 15 : une lueur sur le bouton survolé ; idée 14 : une onde de lumière là où on clique
+    if c.effets && matches!(mode, Mode::Main | Mode::View) {
+        let col = accent(r);
+        let aire = pm.width() as f32 * pm.height() as f32;
+        if let Some((mx, my)) = r.st.souris {
+            if let Some(h) = hits.iter().rev().find(|h| mx >= h.x && mx < h.x + h.w && my >= h.y && my < h.y + h.h) {
+                if h.w * h.h < 0.2 * aire && h.h < 80.0 * s {
+                    lueur(&mut pm, h, col, s);
+                }
+            }
+        }
+        if let Some((ox, oy, t0)) = r.st.onde {
+            let k = t0.elapsed().as_secs_f32() / 0.45;
+            if k < 1.0 {
+                onde(&mut pm, ox, oy, k, col, s);
+            }
+        }
+    }
     Some((pm, wx, wy, hits))
+}
+
+/// Lueur douce autour du bouton survolé.
+fn lueur(pm: &mut Pixmap, h: &Hit, col: Rgba, s: f32) {
+    let rad = (h.h / 2.0).min(12.0 * s);
+    let Some(p) = gfx::rrect(h.x, h.y, h.w, h.h, rad, true) else { return };
+    let mut pt = Paint::default();
+    pt.anti_alias = true;
+    pt.set_color(col.a(0.10).color());
+    pm.fill_path(&p, &pt, FillRule::Winding, Transform::identity(), None);
+    pt.set_color(col.a(0.38).color());
+    pm.stroke_path(&p, &pt, &Stroke { width: 1.2 * s, ..Default::default() }, Transform::identity(), None);
+}
+
+/// Onde de lumière qui s'élargit et s'efface (k de 0 à 1).
+fn onde(pm: &mut Pixmap, x: f32, y: f32, k: f32, col: Rgba, s: f32) {
+    let Some(p) = tiny_skia::PathBuilder::from_circle(x, y, (6.0 + 30.0 * k) * s) else { return };
+    let mut pt = Paint::default();
+    pt.anti_alias = true;
+    pt.set_color(col.a(0.16 * (1.0 - k)).color());
+    pm.fill_path(&p, &pt, FillRule::Winding, Transform::identity(), None);
+    pt.set_color(col.a(0.55 * (1.0 - k)).color());
+    pm.stroke_path(&p, &pt, &Stroke { width: 2.0 * s, ..Default::default() }, Transform::identity(), None);
 }
 
 pub(crate) fn rainbow_border(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, rad: f32, t: f32, s: f32) {
@@ -729,15 +790,37 @@ pub(crate) fn toast(c: &mut Ctx, r: &R, w: f32, h: f32) {
     c.hit(0.0, 0.0, w, h, Action::IleN(N_VIEW, View::Notifs as u16));
 }
 
+/// Bandeau de Jarvis, sur deux lignes : en haut son état (et ta phrase), en bas ce qu'il te dit, mot par mot.
 pub(crate) fn jarvis_bar(c: &mut Ctx, r: &R, w: f32, h: f32) {
     let t = c.t;
-    jarvis_wave(c, 26.0, h / 2.0, &r.jarvis.state, r.t());
+    let j = &r.jarvis;
+    jarvis_wave(c, 28.0, h / 2.0, &j.state, r.t());
     c.hit(0.0, 0.0, w, h, Action::Ile(A_JARVIS_LISTEN));
-    let lab = jarvis_label(&r.jarvis.state);
-    let lw = c.text(Wt::Semibold, 13.5, 44.0, h / 2.0 + 5.0, t.fg, lab);
-    if !r.jarvis.text.is_empty() {
-        let txt = c.fit(Wt::Regular, 12.5, &format!("« {} »", r.jarvis.shown()), w - 64.0 - lw - 12.0);
-        c.text(Wt::Regular, 12.5, 44.0 + lw + 12.0, h / 2.0 + 5.0, t.fg2, &txt);
+    let (x, droite) = (50.0, w - 18.0);
+    let (y1, y2) = (h / 2.0 - 4.0, h / 2.0 + 15.0);
+    let lab = jarvis_label(&j.state);
+    let lw = c.text(Wt::Semibold, 13.5, x, y1, jarvis_color(&j.state).mix(t.fg, 0.35), lab);
+    if !j.toi.is_empty() {
+        let toi = c.fit(Wt::Regular, 12.0, &format!("Toi : « {} »", j.toi), droite - x - lw - 12.0);
+        c.text(Wt::Regular, 12.0, x + lw + 12.0, y1, t.fg3, &toi);
+    }
+    // ce que Jarvis dit (ou vient de dire) : les phrases déjà dites, puis la phrase en cours mot par mot
+    let reponse = if crate::island::parle(&j.state) {
+        let en_cours = j.shown();
+        format!("{} {}", j.dit, en_cours).trim().to_string()
+    } else {
+        j.dit.clone()
+    };
+    let (ligne, col) = if !reponse.is_empty() {
+        (format!("Jarvis : {reponse}"), if crate::island::parle(&j.state) { t.fg } else { t.fg2 })
+    } else if matches!(j.state.as_str(), "ecoute" | "parole" | "reflechit") || j.text.is_empty() {
+        (String::new(), t.fg2)
+    } else {
+        (j.text.clone(), t.fg2)
+    };
+    if !ligne.is_empty() {
+        let txt = fit_fin(c, Wt::Regular, 12.5, &ligne, droite - x);
+        c.text(Wt::Regular, 12.5, x, y2, col, &txt);
     }
 }
 
@@ -1774,12 +1857,45 @@ pub(crate) fn jarvis_wave(c: &mut Ctx, cx: f32, cy: f32, state: &str, t: f32) {
                 c.circle(cx + a.cos() * 5.0, cy + a.sin() * 5.0, 2.0, col);
             }
         }
+        "parole" => {
+            // micro qui capte ta voix : deux petites ondes de chaque côté
+            micro_glyph(c, cx, cy, 1.0, col);
+            for (i, sens) in [(0, -1.0f32), (1, 1.0)] {
+                let k = ((t * 6.0 + i as f32 * 0.5).sin() * 0.5 + 0.5) * 0.8 + 0.2;
+                c.line(cx + sens * 7.5, cy - 2.5 * k - 1.0, cx + sens * 7.5, cy + 2.5 * k - 1.0, 1.6, col.a(0.85));
+                c.line(cx + sens * 10.5, cy - 4.0 * k - 1.0, cx + sens * 10.5, cy + 4.0 * k - 1.0, 1.4, col.a(0.55));
+            }
+        }
         "parle" => {
             for i in 0..4 {
                 let hh = 3.0 + 5.0 * ((t * 9.0 + i as f32 * 1.3).sin() * 0.5 + 0.5);
                 c.rr(cx - 7.0 + i as f32 * 4.0, cy - hh, 2.6, hh * 2.0, 1.3, col);
             }
         }
+        "parle_ecoute" => {
+            // il continue de parler (ondes bleues) ET il t'écoute (petit micro orange qui clignote)
+            let bleu = jarvis_color("parle");
+            for i in 0..3 {
+                let hh = 2.5 + 4.0 * ((t * 9.0 + i as f32 * 1.3).sin() * 0.5 + 0.5);
+                c.rr(cx - 11.0 + i as f32 * 4.0, cy - hh, 2.4, hh * 2.0, 1.2, bleu);
+            }
+            let k = (t * 4.0).sin() * 0.5 + 0.5;
+            c.circle(cx + 6.0, cy - 1.0, 7.0, col.a(0.18 + 0.2 * k));
+            micro_glyph(c, cx + 6.0, cy, 0.8, col);
+        }
         _ => c.circle(cx, cy, 3.5, col),
     }
+}
+
+/// Petit micro (capsule, arceau et pied), centré en (cx, cy), à l'échelle `k`.
+pub(crate) fn micro_glyph(c: &mut Ctx, cx: f32, cy: f32, k: f32, col: Rgba) {
+    c.rr(cx - 2.6 * k, cy - 8.0 * k, 5.2 * k, 9.5 * k, 2.6 * k, col);
+    let w = 1.4 * k;
+    c.line(cx - 4.6 * k, cy - 2.0 * k, cx - 4.6 * k, cy - 0.5 * k, w, col);
+    c.line(cx + 4.6 * k, cy - 2.0 * k, cx + 4.6 * k, cy - 0.5 * k, w, col);
+    c.line(cx - 4.6 * k, cy - 0.5 * k, cx - 2.0 * k, cy + 3.2 * k, w, col);
+    c.line(cx + 4.6 * k, cy - 0.5 * k, cx + 2.0 * k, cy + 3.2 * k, w, col);
+    c.line(cx - 2.0 * k, cy + 3.2 * k, cx + 2.0 * k, cy + 3.2 * k, w, col);
+    c.line(cx, cy + 3.2 * k, cx, cy + 6.5 * k, w, col);
+    c.line(cx - 3.0 * k, cy + 6.5 * k, cx + 3.0 * k, cy + 6.5 * k, w, col);
 }

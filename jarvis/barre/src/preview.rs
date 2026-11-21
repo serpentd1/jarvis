@@ -151,7 +151,7 @@ pub fn run_ile(out: &str) {
         INotif { id: 4, kind: String::new(), src: Src::Jarvis, title: "Jarvis".into(), body: "Pense à sortir le chien.".into(), time: now - chrono::Duration::minutes(2) },
     ];
     let jarvis_idle = Jarvis::default();
-    let jarvis_on = Jarvis { state: "parle".into(), text: "Minuteur de dix minutes lancé.".into(), at: Some(std::time::Instant::now()), seen: Some(std::time::Instant::now()), micro: true, said: None };
+    let jarvis_on = Jarvis { state: "parle".into(), text: "Minuteur de dix minutes lancé.".into(), at: Some(std::time::Instant::now()), seen: Some(std::time::Instant::now()), micro: true, said: None, toi: "Mets un minuteur de dix minutes".into(), dit: String::new() };
     let ring = Ring { label: "Minuteur : pâtes".into(), since: std::time::Instant::now() };
     let full = backdrop::compose(sw as u32, sh as u32, sw as u32);
     // données de Jarvis (vraies si l'assistant tourne), complétées d'exemples si elles sont vides
@@ -184,6 +184,18 @@ pub fn run_ile(out: &str) {
         jd.set("appareils", Ok(serde_json::json!({"ok": true, "appareils": [{"nom": "Manette Xbox", "type": "manette", "batterie": 62, "branche": false},
             {"nom": "Casque Bluetooth", "type": "casque", "batterie": 18, "branche": true}]})));
     }
+    if crate::jarvis_data::arr(jd.get("memoire"), "noeuds").len() < 2 {
+        let n = |id: &str, nom: &str, ty: &str, nb: u32| serde_json::json!({"id": id, "nom": nom, "type": ty, "nb_liens": nb, "cree": 1.0});
+        jd.set("memoire", Ok(serde_json::json!({"ok": true, "sauvegarde": "18/11 16:40",
+            "noeuds": [n("moi", "Moi", "moi", 7), n("maman", "Maman", "personne", 1), n("pronote", "Pronote", "ecole", 1),
+                n("3h", "3h", "autre", 1), n("7_mai_2022", "7 mai 2022", "evenement", 1), n("les_livres", "les livres", "preference", 1),
+                n("livre", "Livre", "objet", 1), n("chill_relax", "Chill Relax", "activite", 1)],
+            "liens": [{"a": "moi", "b": "maman", "relation": "a pour mère"}, {"a": "moi", "b": "pronote", "relation": "utilise"},
+                {"a": "moi", "b": "3h", "relation": "a dit"}, {"a": "moi", "b": "7_mai_2022", "relation": "a dit"},
+                {"a": "moi", "b": "les_livres", "relation": "aime"}, {"a": "moi", "b": "livre", "relation": "a"}, {"a": "moi", "b": "chill_relax", "relation": "écoute"}],
+            "suggestions": [{"id": "3h", "nom": "3h", "raison": "heure ou durée seule"}, {"id": "7_mai_2022", "nom": "7 mai 2022", "raison": "date seule"},
+                {"id": "livre", "nom": "Livre", "raison": "doublon de « les livres »", "vers": "les_livres"}]})));
+    }
     let mut mem = crate::jarvis_data::MemGraph::default();
     mem.sync(jd.get("memoire"));
     for _ in 0..400 {
@@ -191,9 +203,11 @@ pub fn run_ile(out: &str) {
             break;
         }
     }
-    let ui = crate::island_big::BigUi::default();    let mail_ai = island::MailAi { n: Some(0), question: "Fais-moi un résumé de ce mail.".into(), answer: "Le collège te demande de rendre l'autorisation signée pour la sortie au musée avant lundi 8 h. Pense à la faire signer ce week-end.".into(), asking: false };
+    let ui = std::cell::RefCell::new(crate::island_big::BigUi::default());
+    let mail_ai = island::MailAi { n: Some(0), question: "Fais-moi un résumé de ce mail.".into(), answer: "Le collège te demande de rendre l'autorisation signée pour la sortie au musée avant lundi 8 h. Pense à la faire signer ce week-end.".into(), asking: false };
     let clips: Vec<String> = vec!["Exercice 4 p. 52".into(), "https://www.youtube.com/watch?v=exemple".into(), "rdv 14h30 dentiste".into()];
     let shot = |d: &Data, name: &str, cfg: &Config, st: &Island, ring: Option<&Ring>, jarvis: &Jarvis, log: &mut String| {
+        let ui = ui.borrow();
         let r = R {
             cfg,
             fonts: &fonts,
@@ -358,6 +372,22 @@ pub fn run_ile(out: &str) {
         ("pc", View::Pc), ("parametres", View::JSettings), ("routines", View::Routines), ("batteries", View::Batteries), ("copies", View::Clips), ("telephone", View::Phone), ("mails", View::Mails), ("pronote", View::School), ("minuteurs", View::Timers), ("discord", View::Discord)] {
         shot(&d, &format!("40_grande_{name}"), &big, &mk(true, v), None, &jarvis_idle, &mut log);
     }
+    // mémoire en liste : suggestions cochées, puis confirmation de suppression
+    {
+        let mut u = ui.borrow_mut();
+        u.mem_list = true;
+        u.mem_checked = vec!["3h".into(), "7_mai_2022".into(), "livre".into()];
+        u.msg = "Voici ce qui serait supprimé (3). Décoche ce que tu veux garder, puis « Supprimer ».".into();
+    }
+    shot(&d, "42_grande_memoire_liste", &big, &mk(true, View::Memory), None, &jarvis_idle, &mut log);
+    {
+        let mut u = ui.borrow_mut();
+        u.mem_confirm = Some(Instant::now());
+        u.mem_filter = 1;
+        u.msg.clear();
+    }
+    shot(&d, "43_grande_memoire_confirmer", &big, &mk(true, View::Memory), None, &jarvis_idle, &mut log);
+    *ui.borrow_mut() = crate::island_big::BigUi::default();
     // île normale : nouveaux onglets
     for (name, v) in [("taches", View::Tasks), ("pc", View::Pc), ("memoire", View::Memory), ("parametres", View::JSettings), ("habitudes", View::Habits)] {
         shot(&d, &format!("41_onglet_{name}"), &cfg, &mk(true, v), None, &jarvis_idle, &mut log);

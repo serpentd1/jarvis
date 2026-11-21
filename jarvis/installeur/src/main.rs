@@ -7,6 +7,9 @@
 //!   Installer-Jarvis.exe --auto --dossier D --sans-raccourcis   (tests : sans clic, sans toucher au système)
 
 mod etapes;
+/// Profils matériel : le même fichier que la barre de Jarvis.
+#[path = "../../barre/src/profils.rs"]
+mod profils;
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Mutex;
@@ -86,6 +89,8 @@ fn main() {
     options.raccourcis = !a("--sans-raccourcis");
     options.auto = a("--auto");
     options.relancer = a("--relancer");
+    // mise à jour d'un PC qui utilise une clé NVIDIA : pas de modèle local à télécharger
+    options.lmstudio = !a("--sans-ia-locale");
     *OPTIONS.lock().unwrap() = Some(options);
     fenetre();
 }
@@ -171,7 +176,7 @@ unsafe fn construire(h: HWND, instance: *mut core::ffi::c_void, s: &dyn Fn(i32) 
     let cases = [
         (ID_DEMARRAGE, "Démarrer Jarvis avec Windows"),
         (ID_BUREAU, "Créer un raccourci sur le Bureau"),
-        (ID_LMSTUDIO, "Installer LM Studio (le moteur d'IA, gratuit) s'il n'est pas déjà là"),
+        (ID_LMSTUDIO, "IA sur ce PC (LM Studio + modèle de ton profil). Décoche si tu as une clé NVIDIA"),
     ];
     for (i, (id, texte)) in cases.iter().enumerate() {
         let c = ajouter("BUTTON", texte, (BS_AUTOCHECKBOX | WS_TABSTOP as i32) as u32, 24, 124 + i as i32 * 26, 580, 24, *id, false);
@@ -198,7 +203,7 @@ fn demarrer_installation() {
     let mut options = OPTIONS.lock().unwrap().clone().unwrap_or_else(etapes::Options::par_defaut);
     options.demarrage = coche(ID_DEMARRAGE) && options.raccourcis;
     options.bureau = coche(ID_BUREAU) && options.raccourcis;
-    options.lmstudio = coche(ID_LMSTUDIO);
+    options.lmstudio = coche(ID_LMSTUDIO) && options.lmstudio;
     unsafe {
         for id in [ID_INSTALLER, ID_DEMARRAGE, ID_BUREAU, ID_LMSTUDIO] {
             EnableWindow(controle(id), 0);

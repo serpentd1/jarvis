@@ -21,7 +21,7 @@ from datetime import datetime
 import requests
 
 from modules import normaliser
-from . import ollama
+from . import config, ollama
 
 log = logging.getLogger("cerveau")
 
@@ -31,7 +31,9 @@ MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août
 OUI = re.compile(r"^(oui|ouais|ouai|wesh|vas y|ok|okay|d'accord|daccord|envoie|envoie le|envoie la|confirme|je confirme|"
                  r"c'est bon|go|let's go|yes|yep|carrement|bien sur|exactement|exact|parfait|ca marche|fais le|"
                  r"fais la|tres bien|bien|super|nickel|top|cool|genial|valide|c'est ca|c'est parti|absolument|"
-                 r"evidemment|grave|bah oui|ben oui)\b")
+                 r"evidemment|grave|bah oui|ben oui|(?:tu as|t'as|je te donne) (?:mon accord|mon autorisation|"
+                 r"l'autorisation)|je t'autorise|j'autorise|autorise|j'accepte|accepte|affirmatif)\b"
+                 r"|^(?:execute|lance|envoie|fais)(?: la| le| les| ca)?(?: stp| s'il te plait)?$")
 NON = re.compile(r"^(non|nan|nope|annule|laisse tomber|oublie|stop|pas maintenant|attends|surtout pas|n'envoie pas|"
                  r"non merci|pas du tout|arrete|change)\b")
 # L'IA dit avoir agi… sans avoir appelé d'outil : on ne la laisse pas mentir.
@@ -50,7 +52,9 @@ PLUSIEURS_ORDRES = re.compile(r"\b(?:et|puis|ensuite|apres)\s+(?:(?:me|moi|le|la
                               r"annule|arrete|joue|regle|active|demarre|envoie|lis|passe)\b")
 # Sans verbe d'action, c'est une question : l'IA répond avec les données, sans outils
 # (sinon elle « ouvre la boîte mail » au lieu de dire s'il y a des mails importants).
-ACTION = re.compile(r"\b(lance|lancer|ouvr|ferm|quitt|mets|met|mettre|baiss|monte|monter|augment|diminu|coupe|"
+ACTION = re.compile(r"\b(execut|fais (?:le|la|les|ca)|fait (?:le|la|les|ca)|vas y|va sur|va dans|va voir|aller sur|"
+                    r"rends toi|utilise|autoris|essaie|essaye|reessai|refais|recommence|redui|agrandi|minimis|maximis|fenetre|restaur|plein ecran|premier plan|"
+                    r"lance|lancer|ouvr|ferm|quitt|mets|met|mettre|baiss|monte|monter|augment|diminu|coupe|"
                     r"couper|remet|reactiv|envoi|repond|ecri|cherch|recherch|trouve|avance|recule|pause|joue|"
                     r"jouer|passe a|suivant|precedent|reveill|alarme|minuteur|chrono|timer|annul|arret|stop|"
                     r"demarr|active|desactiv|allum|etein|verrouill|actualis|rafraich|lis|lire|volume|ecout|"
@@ -108,9 +112,28 @@ def consigne(nom: str) -> str:
         "- ACTION demandée clairement (ouvrir ou fermer une appli, un site, minuteur, alarme, chrono, vidéo, "
         "musique, volume, envoyer un message Discord, ouvrir Pronote ou un mail…) : appelle l'outil adapté. "
         "N'affirme JAMAIS avoir fait une action sans avoir appelé l'outil.\n"
-        "- Si aucun outil ne permet de faire l'action, dis franchement que tu ne sais pas encore le faire, et ne "
-        "propose JAMAIS une autre action qu'aucun de tes outils ne permet.\n"
+        "- Si aucun outil ne permet de faire l'action, dis en une phrase « je ne sais pas encore faire ça, je l'ai "
+        "noté pour l'apprendre », puis propose UNE chose proche que l'un de tes outils permet vraiment (ouvrir le "
+        "site ou l'appli concernée, chercher sur Internet, mettre un rappel…). Ne propose JAMAIS une action qu'aucun "
+        "de tes outils ne permet. « Qu'est-ce que tu sais faire ? » : appelle ce_que_je_sais_faire.\n"
     )
+
+
+def note_coupure(dit: str, pas_dit: str = "") -> str:
+    """Consigne pour l'IA quand l'utilisateur lui a parlé par-dessus (même texte que cerveau.rs)."""
+    dit = (dit or "").strip().strip("…").strip()
+    if not dit:
+        return ""
+    note = ("\nTu viens d'être coupé par l'utilisateur pendant que tu disais : « " + dit[-300:] + " ». "
+            "C'est normal dans une discussion : ne le prends pas mal et ne t'excuse pas.")
+    if pas_dit.strip():
+        note += (" Tu n'as pas eu le temps de dire : « " + pas_dit.strip()[:400] + " ». Réponds D'ABORD à ce qu'il "
+                 "vient de dire. Ensuite, seulement si c'est encore utile (même sujet, et il ne t'a pas demandé "
+                 "d'arrêter ou de changer de sujet), ajoute UNE phrase très courte qui résume ce que tu n'avais pas "
+                 "eu le temps de dire, par exemple « Et pour finir ce que je disais : … ». Sinon, n'en parle pas.")
+    else:
+        note += " Réponds simplement à ce qu'il vient de dire."
+    return note
 
 
 class Cerveau:
@@ -120,7 +143,10 @@ class Cerveau:
         self.attente = None                       # (action si oui, phrase si non)
         self.verrou = threading.RLock()           # une routine relance le cerveau depuis un de ses outils
         self.coupe = None                         # ce que Jarvis disait quand on lui a coupé la parole
-        self._coupe = None
+        self.pas_dit = ""                         # … et ce qu'il n'a pas eu le temps de dire (mini-résumé ensuite)
+        self._coupe, self._pas_dit = None, ""
+        self._annule = threading.Event()          # on lui a coupé la parole : la réponse en cours est abandonnée
+        self._flux = None
         self._confirmations, self._n = {}, 0      # questions oui/non posées par un outil (pour le cerveau Rust)
         self._barre_absente = 0.0                 # la barre ne répond pas : on n'insiste pas avant cette heure
 
@@ -137,6 +163,16 @@ class Cerveau:
             except Exception:  # noqa: BLE001
                 log.exception("erreur du cerveau")
                 return Reponse("Oups, j'ai eu un bug. Tu peux répéter ?")
+
+    def couper(self):
+        """Arrête tout de suite la réponse en cours (la barre arrête alors l'IA)."""
+        self._annule.set()
+        r = self._flux
+        if r is not None:
+            try:
+                r.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def oublier(self):
         with self.verrou:
@@ -160,17 +196,24 @@ class Cerveau:
         if not url or time.time() < self._barre_absente:
             return None
         coupe, self.coupe = self.coupe, None
-        corps = {"texte": texte, "source": source, "coupe": coupe or "",
-                 "reglages": {**self.cfg, "nom": self.nom}}
+        pas_dit, self.pas_dit = self.pas_dit, ""
+        conv = getattr(self.reg.ctx, "cfg", {}).get("conversation", {})
+        corps = {"texte": texte, "source": source, "coupe": coupe or "", "pas_dit": pas_dit if coupe else "",
+                 "reglages": {**self.cfg, "nom": self.nom, "consigne": config.prompt_systeme(),
+                              "modele_api": str(conv.get("modele", ""))}}
         dites = []
+        self._annule.clear()
         try:
             with requests.post(f"{url}/cerveau", json=corps, stream=True, timeout=(0.5, 400)) as r:
+                self._flux = r
                 if r.status_code != 200:
                     log.warning("le cerveau Rust a répondu %s : je prends le secours Python", r.status_code)
                     self._barre_absente = time.time() + 60
-                    self.coupe = coupe
+                    self.coupe, self.pas_dit = coupe, pas_dit
                     return None
                 for ligne in r.iter_lines():
+                    if self._annule.is_set():
+                        break
                     if not ligne:
                         continue
                     d = json.loads(ligne.decode("utf-8"))
@@ -182,15 +225,21 @@ class Cerveau:
                         return Reponse(d.get("reponse", ""), bool(d.get("suivi")),
                                        d.get("reste", "") if sur_phrase else None)
         except requests.ConnectionError:
+            if self._annule.is_set():
+                return Reponse(" ".join(dites), False, "")
             if not dites:
                 self._barre_absente = time.time() + 10
-                self.coupe = coupe
+                self.coupe, self.pas_dit = coupe, pas_dit
                 return None
         except Exception:  # noqa: BLE001
+            if self._annule.is_set():
+                return Reponse(" ".join(dites), False, "")
             log.exception("cerveau Rust")
             if not dites:
-                self.coupe = coupe
+                self.coupe, self.pas_dit = coupe, pas_dit
                 return None
+        finally:
+            self._flux = None
         return Reponse(" ".join(dites), False, "" if sur_phrase else None)   # coupé en route : on garde ce qui est dit
 
     # ── registre pour le cerveau Rust (routes /cerveau/… de serveur.py) ──
@@ -216,6 +265,10 @@ class Cerveau:
 
     def _resultat(self, r) -> dict:
         d = {"ok": bool(r.ok), "dire": r.dire, "annuler": r.annuler}
+        if getattr(r, "pour_ia", ""):
+            d["pour_ia"] = r.pour_ia
+        if getattr(r, "images", None):
+            d["images"] = list(r.images)
         if r.confirmer:
             self._n += 1
             self._confirmations[self._n] = r.confirmer
@@ -260,6 +313,7 @@ class Cerveau:
     # ── interne ──────────────────────────────────────────────
     def _repondre(self, texte: str, source: str) -> Reponse:
         self._coupe, self.coupe = self.coupe, None     # ne sert qu'à la réponse qui suit la coupure
+        self._pas_dit, self.pas_dit = self.pas_dit, ""
         texte = enlever_mot_activation(texte)
         n = normaliser(texte)
         if not n:
@@ -308,9 +362,7 @@ class Cerveau:
     def _ia(self, texte: str) -> Reponse:
         note = ""
         if self._coupe:
-            note = ("\nTu viens d'être coupé par l'utilisateur pendant que tu disais : « " + self._coupe[:300] + " ». "
-                    "C'est normal dans une discussion : ne le prends pas mal et ne t'excuse pas longuement. Réponds "
-                    "simplement à ce qu'il vient de dire, et ne reprends ton explication que s'il te le demande.")
+            note = note_coupure(self._coupe, self._pas_dit)
         messages = [{"role": "system", "content": consigne(self.nom) + note + "\n" + self._contexte(texte)},
                     *self.historique, {"role": "user", "content": texte}]
         message = self._appel_ollama(messages, outils=bool(ACTION.search(normaliser(texte))))

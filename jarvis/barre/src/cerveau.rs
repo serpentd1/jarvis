@@ -27,7 +27,6 @@ use crate::jarvis_link;
 use crate::pouvoirs::{self, Sortie};
 
 /// Nombre maximum d'outils proposés à l'IA pour une question.
-const MAX_OUTILS: usize = 16;
 /// Une question « tu confirmes ? » reste valable ce temps-là.
 const ATTENTE_VALIDE: Duration = Duration::from_secs(180);
 
@@ -43,11 +42,15 @@ pub struct Reglages {
     pub nom: String,
     /// Nombre d'échanges gardés en mémoire.
     pub historique: usize,
+    /// Le prompt système écrit par l'utilisateur (fichier prompt-systeme.txt) : vide = celui de base.
+    pub consigne: String,
+    /// Le modèle à utiliser chez NVIDIA (config.toml, [conversation] modele) : vide = choisi tout seul.
+    pub modele_api: String,
 }
 
 impl Default for Reglages {
     fn default() -> Self {
-        Reglages { modele_rapide: String::new(), temperature: 0.4, contexte: 8192, garder: "30m".into(), nom: "Jarvis".into(), historique: 3 }
+        Reglages { modele_rapide: String::new(), temperature: 0.4, contexte: 8192, garder: "30m".into(), nom: "Jarvis".into(), historique: 3, consigne: String::new(), modele_api: String::new() }
     }
 }
 
@@ -64,6 +67,8 @@ impl Reglages {
             garder: s("garder_en_memoire", &d.garder),
             nom: s("nom", &d.nom),
             historique: v["historique"].as_u64().unwrap_or(d.historique as u64) as usize,
+            consigne: v["consigne"].as_str().unwrap_or("").trim().to_string(),
+            modele_api: v["modele_api"].as_str().unwrap_or("").trim().to_string(),
         })
     }
 }
@@ -93,6 +98,8 @@ struct Etat {
     cache_outils: Option<(Instant, Vec<Value>)>,
     /// Outils utilisés au dernier échange (« et monte encore un peu » doit les retrouver).
     derniers: Vec<String>,
+    /// Échanges faits sans outil depuis `derniers` (« exécute-la » juste après reste une suite d'action).
+    sans_outil: usize,
 }
 
 static ETAT: Mutex<Option<Etat>> = Mutex::new(None);
@@ -107,6 +114,7 @@ fn avec<R>(f: impl FnOnce(&mut Etat) -> R) -> R {
         out: None,
         cache_outils: None,
         derniers: Vec::new(),
+        sans_outil: 0,
     });
     f(e)
 }
@@ -127,6 +135,7 @@ pub fn oublier() {
         e.histo.clear();
         e.attente = None;
         e.derniers.clear();
+        e.sans_outil = 0;
     });
 }
 
@@ -153,6 +162,17 @@ pub fn enlever_mot_activation(texte: &str) -> String {
 
 fn est_oui(n: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
+    static ORDRE: OnceLock<Regex> = OnceLock::new();
+    // « Exécute-la », « Lance-le » : un oui, mais seulement si la phrase s'arrête là (« lance le minuteur » est un autre ordre)
+    if re(&ORDRE, r"^(?:execute|lance|envoie|fais)(?: la| le| les| ca)?(?: stp| s'il te plait)?$").is_match(n) {
+        return true;
+    }
+    re(&R, r"^(?:(?:tu as|t'as|je te donne) (?:mon accord|mon autorisation|l'autorisation)|je t'autorise|j'autorise|autorise|j'accepte|accepte|affirmatif)\b").is_match(n)
+        || est_oui_simple(n)
+}
+
+fn est_oui_simple(n: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
     re(&R, r"^(oui|ouais|ouai|wesh|vas y|ok|okay|d'accord|daccord|envoie|envoie le|envoie la|confirme|je confirme|c'est bon|go|let's go|yes|yep|carrement|bien sur|exactement|exact|parfait|ca marche|fais le|fais la|tres bien|bien|super|nickel|top|cool|genial|valide|c'est ca|c'est parti|absolument|evidemment|grave|bah oui|ben oui)\b").is_match(n)
 }
 
@@ -165,17 +185,43 @@ fn est_oubli(n: &str) -> bool {
     matches!(n, "oublie tout" | "nouvelle conversation" | "on change de sujet" | "efface la memoire" | "efface ta memoire" | "reset")
 }
 
-/// L'IA dit avoir agi… sans avoir appelé d'outil : on ne la laisse pas mentir.
+/// L'IA dit avoir agi… sans avoir appelé d'outil : on ne la laisse pas mentir. `texte` : sa réponse telle quelle.
 /// `strict` : l'utilisateur a demandé une action, donc « c'est supprimé », « le fichier a été créé »… comptent aussi.
-fn pretend_agir(n: &str, strict: bool) -> bool {
+/// Mais une phrase qui DÉCRIT un état n'est pas un mensonge : « je peux regarder quelles fenêtres sont ouvertes »,
+/// « je ne vois pas quelles applis sont installées », « Chrome est déjà lancé ? ». Les tournures « est / sont … »
+/// ne comptent donc que dans une phrase affirmative, sans négation, question ni hypothèse.
+fn pretend_agir(texte: &str, strict: bool) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
     static S: OnceLock<Regex> = OnceLock::new();
+    static P: OnceLock<Regex> = OnceLock::new();
+    static DOUTE: OnceLock<Regex> = OnceLock::new();
     const FAIT: &str = "supprime|enregistre|cree|ferme|efface|deplace|copie|renomme|modifie|note|ajoute|active|desactive|coupe|eteint|allume|installe|annule|arrete|envoye|lance|ouvert|regle|programme|demarre|mis";
-    re(&R, r"\b(j'ai (bien )?(envoye|lance|ouvert|ferme|mis|regle|active|desactive|coupe|change|cree|programme|supprime|annule|demarre|transmis)|c'est (bien )?(envoye|fait|lance|ouvert|regle|parti|programme)|message (bien )?envoye|je (l')?envoie|j'envoie|j'ouvre|je lance|je ferme|je mets|je regle|je coupe|minuteur (lance|regle|cree))\b").is_match(n)
-        || (strict && re(&S, &format!(r"\b(c'est (bien |maintenant )?({FAIT})|(est|sont|a ete|ont ete) (bien |maintenant )?({FAIT})|j'ai (bien )?({FAIT})|je (l'|le |la |les )?(supprime|cree|efface|deplace|copie|renomme|modifie|eteins|allume|arrete|annule))e?s?\b")).is_match(n))
+    let n = normaliser(texte);
+    if re(&R, r"\b(j'ai (bien )?(envoye|lance|ouvert|ferme|mis|regle|active|desactive|coupe|change|cree|programme|supprime|annule|demarre|transmis)|c'est (bien )?(envoye|fait|lance|ouvert|regle|parti|programme)|message (bien )?envoye|je (l')?envoie|j'envoie|j'ouvre|je lance|je ferme|je mets|je regle|je coupe|minuteur (lance|regle|cree))\b").is_match(&n) {
+        return true;
+    }
+    if !strict {
+        return false;
+    }
+    if re(&S, &format!(r"\b(c'est (bien |maintenant )?({FAIT})|j'ai (bien )?({FAIT})|je (l'|le |la |les )?(supprime|cree|efface|deplace|copie|renomme|modifie|eteins|allume|arrete|annule))e?s?\b")).is_match(&n) {
+        return true;
+    }
+    let passif = re(&P, &format!(r"\b(est|sont|a ete|ont ete) (bien |maintenant )?({FAIT})e?s?\b"));
+    let doute = re(&DOUTE, r"\b(ne|n'\w+|pas|jamais|aucun|aucune|si|s'il|peux|peut|pourrai|pourrais|pourrait|veux|voudrais|quel|quelle|quels|quelles|lequel|laquelle|est ce|deja|voir|savoir|verifier|regarder|regarde)\b");
+    texte.split_inclusive(['.', '!', '?', '…', ';', '\n']).any(|phrase| {
+        let p = normaliser(phrase);
+        !phrase.trim_end().ends_with('?') && passif.is_match(&p) && !doute.is_match(&p)
+    })
 }
 
 /// L'IA dit qu'elle ne sait pas faire : peut-être que le bon outil ne lui a pas été proposé.
+/// L'IA a ÉCRIT un appel d'outil au lieu de l'appeler (« ouvrir_application Chrome », « <tool_call> ») :
+/// ce texte ne doit jamais être lu à voix haute, et l'action n'est pas faite.
+fn ecrit_un_outil(texte: &str, connus: &[String]) -> bool {
+    let bas = texte.to_lowercase();
+    bas.contains("tool_call") || bas.contains("\"arguments\"") || connus.iter().any(|nom| nom.contains('_') && bas.contains(nom.as_str()))
+}
+
 fn dit_ne_pas_savoir(n: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
     re(&R, r"\b(ne sais pas (encore )?(le |la |les )?faire|sais pas encore|ne peux pas (le |la |les )?faire|je ne peux pas|pas (encore )?capable|aucun outil|pas d'outil|n'ai pas (d'|l')outil)\b").is_match(n)
@@ -186,10 +232,21 @@ fn plusieurs_ordres(n: &str) -> bool {
     re(&R, r"\b(?:et|puis|ensuite|apres)\s+(?:(?:me|moi|le|la|les|un|une|aussi)\s+)?(?:mets?|lance|ouvre|ferme|baisse|monte|coupe|cherche|reveille|dis|reponds?|annule|arrete|joue|regle|active|demarre|envoie|lis|passe)\b").is_match(n)
 }
 
+/// Outils Internet (lents : une phrase d'attente est dite pendant qu'ils tournent).
+const OUTILS_INTERNET: [&str; 4] = ["web_search", "read_page", "lire_onglet", "capture_onglet"];
+const PHRASE_ATTENTE: &str = "Je regarde ça.";
+
+/// Question dont la réponse a pu changer (actualité, résultats, prix…) ou qui parle d'une page web :
+/// les outils Internet sont proposés à l'IA, même sans verbe d'action.
+fn besoin_d_internet(n: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    re(&R, r"\b(internet|web|en ligne|google|cherch|recherch|derni|actuel|en ce moment|aujourd'hui|ce soir|hier|cette (annee|semaine|saison)|recemment|recent|actu|news|nouveaute|resultat|score|classement|qui a gagne|a gagne|vainqueur|champion|match|prix (d|du|de)|combien (coute|vaut)|sorti|bourse|election|president|onglet|chrome|page|site|article|lien|capture|resume|20[2-3][0-9])").is_match(n)
+}
+
 /// Sans verbe d'action, c'est une question : l'IA répond avec les données, sans outils.
 fn est_action(n: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
-    re(&R, r"\b(lance|lancer|ouvr|ferm|quitt|mets|met|mettre|baiss|monte|monter|augment|diminu|coupe|couper|remet|reactiv|envoi|repond|ecri|cherch|recherch|trouve|avance|recule|pause|joue|jouer|passe a|suivant|precedent|reveill|alarme|minuteur|chrono|timer|annul|arret|stop|demarr|active|desactiv|allum|etein|verrouill|actualis|rafraich|lis|lire|volume|ecout|affich|montre|regle|dis a|dis lui|plus fort|moins fort|clique|clic|tape|appuie|presse|saisis|defile|descend|remonte|scroll|regarde|ecran|analyse|decris|voix|installe|ajoute|rajoute|note (?:que|ca|le|la|les|dans|bien|moi)|prends note|retiens|souviens|rappelle|coche|termine|j'ai fait|j'ai fini|cree|oublie|routine|habitude|verrouille|batterie|supprim|efface|renomm|deplac|copie|modifi|corrige|fichier|dossier|page web|site web|powershell|commande|redemarr|veille|tue|processus|sonner|sonne|appelle|photo|lampe|silencieux|vibreur)").is_match(n)
+    re(&R, r"\b(execut|fais (?:le|la|les|ca)|fait (?:le|la|les|ca)|vas y|va sur|va dans|va voir|aller sur|rends toi|utilise|autoris|essaie|essaye|reessai|refais|recommence|lance|lancer|ouvr|ferm|quitt|mets|met|mettre|baiss|monte|monter|augment|diminu|coupe|couper|remet|reactiv|envoi|repond|ecri|cherch|recherch|trouve|avance|recule|pause|joue|jouer|passe a|suivant|precedent|reveill|alarme|minuteur|chrono|timer|annul|arret|stop|demarr|active|desactiv|allum|etein|verrouill|actualis|rafraich|lis|lire|volume|ecout|affich|montre|regle|dis a|dis lui|plus fort|moins fort|clique|clic|tape|appuie|presse|saisis|defile|descend|remonte|scroll|regarde|ecran|analyse|decris|voix|installe|ajoute|rajoute|note (?:que|ca|le|la|les|dans|bien|moi)|prends note|retiens|souviens|rappelle|coche|termine|j'ai fait|j'ai fini|cree|oublie|routine|habitude|verrouille|batterie|supprim|efface|renomm|deplac|copie|modifi|corrige|fichier|dossier|page web|site web|powershell|commande|redemarr|veille|tue|processus|sonner|sonne|appelle|photo|lampe|silencieux|vibreur|redui|agrandi|minimis|maximis|fenetre|restaur|plein ecran|premier plan|en petit|en grand|modele|mode leger|mode performant|ne vais pas|n y vais pas|j y vais|y vais finalement|pas cours|pas en cours|emploi du temps|pai)").is_match(n)
 }
 
 fn nettoyer(texte: &str) -> String {
@@ -212,7 +269,8 @@ pub fn visible(texte: &str) -> String {
     t
 }
 
-/// Phrases terminées depuis l'octet `depuis` (les très courtes sont regroupées jusqu'à 40 caractères).
+/// Phrases terminées depuis l'octet `depuis` (les très courtes sont regroupées jusqu'à 40 caractères ;
+/// la toute première part dès 20 caractères, pour que Jarvis commence à parler plus tôt).
 /// Renvoie les phrases et le nouvel octet de départ. `fin` : la réponse est complète, on donne le reste.
 pub fn phrases_pretes(texte: &str, depuis: usize, fin: bool) -> (Vec<String>, usize) {
     let (mut sorties, mut debut) = (Vec::new(), depuis.min(texte.len()));
@@ -222,7 +280,8 @@ pub fn phrases_pretes(texte: &str, depuis: usize, fin: bool) -> (Vec<String>, us
     for (i, c) in reste.char_indices() {
         if c.is_whitespace() && precedent.is_some_and(|p| matches!(p, '.' | '!' | '?' | '…')) {
             let morceau = &texte[debut..base + i];
-            if morceau.trim().chars().count() >= 40 {
+            let minimum = if debut == 0 { 20 } else { 40 };
+            if morceau.trim().chars().count() >= minimum {
                 sorties.push(morceau.trim().to_string());
                 debut = base + i;
             }
@@ -242,15 +301,29 @@ pub fn phrases_pretes(texte: &str, depuis: usize, fin: bool) -> (Vec<String>, us
 const JOURS: [&str; 7] = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"];
 const MOIS: [&str; 12] = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
 
-fn consigne(nom: &str) -> String {
+fn consigne(nom: &str, perso: &str, quelle_ia: &str) -> String {
     let m = Local::now();
+    let lieu = if quelle_ia.contains("LM Studio") || quelle_ia.contains("Ollama") { "en local, sur ce PC" } else { "dans le cloud (sur Internet)" };
+    let ia = if quelle_ia.is_empty() {
+        String::new()
+    } else {
+        format!("Tu fonctionnes avec l'IA « {quelle_ia} », {lieu}. Si on te demande quel modèle ou quelle IA tu es, dis-le simplement.\n")
+    };
+    // Le prompt de l'utilisateur (prompt-systeme.txt) remplace la présentation et la longueur des réponses.
+    let presentation = if perso.trim().is_empty() {
+        format!(
+            "Tu es {nom}, l'assistant vocal d'un collégien français, sur son PC Windows. Tu es efficace, poli, \
+avec une pointe d'humour à la Jarvis d'Iron Man.\n- Réponds en français, en TUTOYANT l'utilisateur, en une ou deux \
+phrases courtes et naturelles : elles sont LUES À VOIX HAUTE."
+        )
+    } else {
+        perso.replace("{nom}", nom).trim().to_string()
+    };
     format!(
-        "Tu es {nom}, l'assistant vocal d'un collégien français, sur son PC Windows. Tu es efficace, poli, \
-avec une pointe d'humour à la Jarvis d'Iron Man.\n\
+        "{presentation}\n{ia}\
 Nous sommes le {} {} {} {}, il est {}.\n\
 RÈGLES :\n\
-- Réponds en français, en TUTOYANT l'utilisateur, en une ou deux phrases courtes et naturelles : elles \
-sont LUES À VOIX HAUTE. Pas de markdown, pas de listes, pas d'émojis.\n\
+- Tout ce que tu écris est lu à voix haute : pas de markdown, pas de listes, pas d'émojis, pas de liens.\n\
 - Tu ne sais pas encore envoyer de message sur Pronote ni de mail : si on te le demande, dis-le.\n\
 - N'INVENTE RIEN. Pour les devoirs, les notes, les cours, les mails et les messages, ne cite que ce qui est écrit \
 mot pour mot dans les DONNÉES : garde chaque devoir avec SA matière, sans mélanger deux matières. Si tu n'es pas \
@@ -260,13 +333,18 @@ téléphone…) : réponds directement avec les DONNÉES ci-dessous, SANS appele
 n'y est pas, dis-le au lieu d'inventer. « Et demain ? » continue la question précédente.\n\
 - DISCUSSION ou CULTURE GÉNÉRALE (blague, histoire, devinette, conseil, explication, question de cours…) : \
 réponds toi-même avec tes connaissances, volontiers et sans outil.\n\
+- ACTUALITÉ ou info qui a pu changer (résultats sportifs, « le dernier… », prix, sorties, personnes en poste…) : \
+si l'outil web_search t'est proposé, appelle-le au lieu de répondre de mémoire, car ta mémoire peut être dépassée. \
+Une page ouverte dans Chrome : lire_onglet pour son texte, capture_onglet pour la voir.\n\
 - ACTION demandée clairement (ouvrir ou fermer une appli, un site, minuteur, alarme, chrono, vidéo, \
 musique, volume, fichier, téléphone, envoyer un message Discord, ouvrir Pronote ou un mail…) : appelle \
 l'outil adapté, avec des paramètres précis tirés de la demande. N'affirme JAMAIS avoir fait une action \
 sans avoir appelé l'outil.\n\
 - Plusieurs actions demandées d'un coup : appelle un outil par action, dans l'ordre.\n\
-- Si aucun outil ne permet de faire l'action, dis franchement que tu ne sais pas encore le faire, et ne \
-propose JAMAIS une autre action qu'aucun de tes outils ne permet.\n",
+- Si aucun outil ne permet de faire l'action, dis en une phrase « je ne sais pas encore faire ça, je l'ai noté \
+pour l'apprendre », puis propose UNE chose proche que l'un de tes outils permet vraiment (ouvrir le site ou l'appli \
+concernée, chercher sur Internet, mettre un rappel…). Ne propose JAMAIS une action qu'aucun de tes outils ne \
+permet. « Qu'est-ce que tu sais faire ? » : appelle ce_que_je_sais_faire s'il t'est proposé.\n",
         JOURS[m.weekday().num_days_from_monday() as usize],
         m.day(),
         MOIS[m.month0() as usize],
@@ -331,7 +409,11 @@ fn racine(mot: &str) -> &str {
 /// Garde les outils qui ont un rapport avec la question (au plus MAX_OUTILS). Rien ne ressemble : on les
 /// donne tous, pour ne jamais priver l'IA du bon outil.
 pub fn choisir(tous: &[Value], n: &str, garder: &[String]) -> Vec<Value> {
-    if tous.len() <= MAX_OUTILS {
+    // mode ultra léger : sans les actions lourdes, et moins d'outils (voir ia::max_outils)
+    let permis: Vec<Value> = tous.iter().filter(|o| crate::ia::outil_permis(nom_outil(o))).cloned().collect();
+    let tous = &permis[..];
+    let max = crate::ia::max_outils();
+    if tous.len() <= max {
         return tous.to_vec();
     }
     let mots: Vec<&str> = n.split(' ').filter(|m| m.chars().count() >= 3 && !MOTS_VIDES.contains(m)).map(racine).collect();
@@ -363,19 +445,25 @@ pub fn choisir(tous: &[Value], n: &str, garder: &[String]) -> Vec<Value> {
         return tous.to_vec();
     }
     notes.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    notes.into_iter().filter(|(note, _)| *note > 0).take(MAX_OUTILS).map(|(_, i)| tous[i].clone()).collect()
+    notes.into_iter().filter(|(note, _)| *note > 0).take(max).map(|(_, i)| tous[i].clone()).collect()
 }
 
 /// Résultat d'un outil.
+#[derive(Default)]
 struct Res {
     dire: String,
     confirmer: Option<Cote>,
     annuler: String,
+    /// Données pour l'IA (résultats web, texte d'une page…) : elle rédige la réponse parlée (2e tour).
+    pour_ia: String,
+    /// Images en base64 (capture d'un onglet) montrées à l'IA au 2e tour.
+    images: Vec<String>,
 }
 
 fn res_sortie(s: Sortie) -> Res {
     let confirmer = if let Sortie::Question(id, _) = &s { Some(Cote::Rust(*id)) } else { None };
-    Res { dire: s.texte().to_string(), confirmer, annuler: "D'accord, je ne touche à rien.".into() }
+    let pour_ia = if let Sortie::Donnees(_, p) = &s { p.clone() } else { String::new() };
+    Res { dire: s.texte().to_string(), confirmer, annuler: "D'accord, je ne touche à rien.".into(), pour_ia, ..Default::default() }
 }
 
 fn res_python(r: &Value) -> Res {
@@ -385,6 +473,8 @@ fn res_python(r: &Value) -> Res {
         dire,
         confirmer: r["confirmer"].as_u64().map(Cote::Python),
         annuler: r["annuler"].as_str().unwrap_or("D'accord, j'annule.").to_string(),
+        pour_ia: r["pour_ia"].as_str().unwrap_or("").to_string(),
+        images: r["images"].as_array().into_iter().flatten().filter_map(|i| i.as_str().map(str::to_string)).collect(),
     }
 }
 
@@ -404,7 +494,7 @@ fn duree_parlee(secs: u32) -> String {
 }
 
 /// Demande à la fenêtre de la barre (minuteur, alarme…) et attend sa réponse.
-fn a_la_barre(req: ApiReq) -> Option<Value> {
+pub(crate) fn a_la_barre(req: ApiReq) -> Option<Value> {
     let out = avec(|e| e.out.clone())?;
     let (tx, rx) = channel();
     out.send(Msg::Api(req, tx));
@@ -414,7 +504,7 @@ fn a_la_barre(req: ApiReq) -> Option<Value> {
 
 fn outil_barre(nom: &str, args: &Value) -> Option<Res> {
     let s = |k: &str| args[k].as_str().unwrap_or("").trim().to_string();
-    let fait = |t: String| Some(Res { dire: t, confirmer: None, annuler: String::new() });
+    let fait = |t: String| Some(Res { dire: t, ..Default::default() });
     let rate = || fait("Désolé, ça n'a pas marché.".into());
     match nom {
         "lancer_minuteur" => {
@@ -470,7 +560,7 @@ fn executer(nom: &str, args: &Value, python: bool) -> Res {
     if python {
         return match jarvis_link::post("/cerveau/outil", json!({"nom": nom, "args": args}), 330) {
             Ok(r) => res_python(&r),
-            Err(_) => Res { dire: "Désolé, ça n'a pas marché.".into(), confirmer: None, annuler: String::new() },
+            Err(_) => Res { dire: "Désolé, ça n'a pas marché.".into(), ..Default::default() },
         };
     }
     outil_barre(nom, args).unwrap_or_else(|| res_sortie(pouvoirs::appeler(nom, args)))
@@ -545,6 +635,8 @@ pub struct Demande {
     pub source: String,
     /// Ce que Jarvis disait quand on lui a coupé la parole.
     pub coupe: Option<String>,
+    /// Ce qu'il n'avait pas encore eu le temps de dire quand on l'a coupé (il en fait un mini-résumé ensuite).
+    pub pas_dit: Option<String>,
     /// La voix (Python) tourne : ses modules donnent les outils, les raccourcis et les données.
     pub python: bool,
     /// Données du moment (Pronote, mails, météo…) quand la voix ne tourne pas.
@@ -569,10 +661,14 @@ fn rep(texte: impl Into<String>, suivi: bool) -> Rep {
 
 /// Répond à ce que dit l'utilisateur. `sur_phrase` reçoit les phrases dès qu'elles sont prêtes
 /// (réponses sans action seulement) ; le reste est dans `Rep::reste`.
-pub fn repondre(d: Demande, sur_phrase: &mut dyn FnMut(&str)) -> Rep {
+pub fn repondre(d: Demande, sur_phrase: &mut dyn FnMut(&str) -> bool) -> Rep {
     if let Some(r) = &d.reglages {
         avec(|e| e.reg_voix = Some(r.clone()));
         ia::rapide_ollama(&r.modele_rapide);
+        ia::modele_api(&r.modele_api);
+    }
+    if let Some(c) = d.coupe.as_deref() {
+        corriger_coupe(c);
     }
     let reg = avec(|e| if d.python { e.reg_voix.clone().unwrap_or_else(|| e.reg.clone()) } else { e.reg.clone() });
     let texte = enlever_mot_activation(&d.texte);
@@ -587,14 +683,16 @@ pub fn repondre(d: Demande, sur_phrase: &mut dyn FnMut(&str)) -> Rep {
         if oui || non {
             let r = match (&a.cote, oui) {
                 (Cote::Rust(id), _) => res_sortie(pouvoirs::confirmer(*id, oui)),
-                (Cote::Python(id), true) => jarvis_link::post("/cerveau/confirmer", json!({"id": id}), 330).map(|v| res_python(&v)).unwrap_or(Res {
-                    dire: "Désolé, ça n'a pas marché.".into(),
-                    confirmer: None,
-                    annuler: String::new(),
-                }),
-                (Cote::Python(_), false) => Res { dire: a.annuler.clone(), confirmer: None, annuler: String::new() },
+                (Cote::Python(id), true) => jarvis_link::post("/cerveau/confirmer", json!({"id": id}), 330).map(|v| res_python(&v)).unwrap_or(Res { dire: "Désolé, ça n'a pas marché.".into(), ..Default::default() }),
+                (Cote::Python(_), false) => Res { dire: a.annuler.clone(), ..Default::default() },
             };
             return fin(&reg, &d, &texte, r.dire.clone(), vec![r], String::new(), &[]);
+        }
+        // Un ou deux mots, ni oui ni non (« Loss » au lieu de « oui ») : souvent un « oui » mal entendu.
+        // On garde la question et on la repose, au lieu de l'oublier.
+        if n.split(' ').count() <= 2 && !est_action(&n) && !est_oubli(&n) && !matches!(n.as_str(), "merci" | "merci beaucoup") {
+            avec(|e| e.attente = Some(Attente { quand: Instant::now(), ..a }));
+            return rep("Je n'ai pas bien entendu : c'est oui ou non ?", true);
         }
         if let Cote::Rust(id) = a.cote {
             let _ = pouvoirs::confirmer(id, false); // autre sujet : la question est oubliée
@@ -614,7 +712,7 @@ pub fn repondre(d: Demande, sur_phrase: &mut dyn FnMut(&str)) -> Rep {
             let appels: Vec<(String, Value)> = v["appels"].as_array().into_iter().flatten().filter_map(|a| Some((a[0].as_str()?.to_string(), a[1].clone()))).collect();
             if !appels.is_empty() {
                 crate::sys::log(&format!("cerveau : raccourci {appels:?}"));
-                return executer_tout(&reg, &d, &texte, appels, String::new());
+                return executer_tout(&reg, &d, &texte, appels, String::new(), sur_phrase);
             }
         }
     } else {
@@ -624,13 +722,60 @@ pub fn repondre(d: Demande, sur_phrase: &mut dyn FnMut(&str)) -> Rep {
         }
         if !plusieurs_ordres(&n) {
             if let Some(appel) = raccourci_local(&n, &texte) {
-                return executer_tout(&reg, &d, &texte, vec![appel], String::new());
+                return executer_tout(&reg, &d, &texte, vec![appel], String::new(), sur_phrase);
             }
         }
     }
 
     // 3. l'IA
     ia(&reg, &d, &texte, &n, sur_phrase)
+}
+
+/// Jarvis a été coupé : sa dernière réponse, dans l'historique, devient ce qu'il a VRAIMENT dit
+/// (pour qu'il sache où il en était), au lieu de toute la réponse prévue.
+pub fn corriger_coupe(dit: &str) {
+    let dit = dit.trim().trim_matches('…').trim();
+    if dit.is_empty() {
+        // coupé avant d'avoir rien dit : l'utilisateur n'avait pas fini sa phrase (la voix la recolle), on oublie cet échange
+        avec(|e| {
+            e.histo.pop_back();
+        });
+        return;
+    }
+    let texte = format!("{dit}… (coupé ici par l'utilisateur)");
+    avec(|e| {
+        if let Some(m) = e.histo.back_mut().and_then(|ech| ech.iter_mut().rev().find(|m| m["role"] == "assistant" && m.get("tool_calls").is_none())) {
+            m["content"] = json!(texte);
+        }
+    });
+}
+
+/// Consigne pour l'IA quand l'utilisateur lui a parlé par-dessus : où il en était, et ce qu'il n'a pas dit.
+/// Il répond d'abord au nouveau message, puis résume en une phrase ce qui restait, si c'est encore utile.
+pub fn note_coupure(dit: &str, pas_dit: &str) -> String {
+    let dit = dit.trim().trim_matches('…').trim();
+    if dit.is_empty() {
+        return String::new();
+    }
+    let n = dit.chars().count();
+    let fin: String = dit.chars().skip(n.saturating_sub(300)).collect();
+    let mut note = format!(
+        "\nTu viens d'être coupé par l'utilisateur pendant que tu disais : « {fin} ». C'est normal dans une discussion : \
+ne le prends pas mal et ne t'excuse pas."
+    );
+    let reste = pas_dit.trim();
+    if reste.is_empty() {
+        note.push_str(" Réponds simplement à ce qu'il vient de dire.");
+    } else {
+        let reste: String = reste.chars().take(400).collect();
+        note.push_str(&format!(
+            " Tu n'as pas eu le temps de dire : « {reste} ». Réponds D'ABORD à ce qu'il vient de dire. Ensuite, seulement \
+si c'est encore utile (même sujet, et il ne t'a pas demandé d'arrêter ou de changer de sujet), ajoute UNE phrase très \
+courte qui résume ce que tu n'avais pas eu le temps de dire, par exemple « Et pour finir ce que je disais : … ». \
+Sinon, n'en parle pas."
+        ));
+    }
+    note
 }
 
 fn donnees(d: &Demande, texte: &str) -> String {
@@ -645,15 +790,14 @@ fn donnees(d: &Demande, texte: &str) -> String {
     }
 }
 
-fn ia(reg: &Reglages, d: &Demande, texte: &str, n: &str, sur_phrase: &mut dyn FnMut(&str)) -> Rep {
-    let mut systeme = consigne(&reg.nom);
-    if let Some(c) = d.coupe.as_deref().filter(|c| !c.is_empty()) {
-        let debut: String = c.chars().take(300).collect();
-        systeme.push_str(&format!(
-            "\nTu viens d'être coupé par l'utilisateur pendant que tu disais : « {debut} ». C'est normal dans une discussion : \
-ne le prends pas mal et ne t'excuse pas longuement. Réponds simplement à ce qu'il vient de dire, et ne reprends ton \
-explication que s'il te le demande."
-        ));
+fn quelle_ia(reg: &Reglages) -> String {
+    ia::actif().unwrap_or_else(|| if reg.modele_api.is_empty() { String::new() } else { format!("NVIDIA · {}", reg.modele_api) })
+}
+
+fn ia(reg: &Reglages, d: &Demande, texte: &str, n: &str, sur_phrase: &mut dyn FnMut(&str) -> bool) -> Rep {
+    let mut systeme = consigne(&reg.nom, &reg.consigne, &quelle_ia(reg));
+    if let Some(c) = d.coupe.as_deref() {
+        systeme.push_str(&note_coupure(c, d.pas_dit.as_deref().unwrap_or("")));
     }
     systeme.push('\n');
     systeme.push_str(&donnees(d, texte));
@@ -663,8 +807,30 @@ explication que s'il te le demande."
 
     let tous = tous_les_outils(d.python);
     let connus: Vec<String> = tous.iter().map(|o| nom_outil(o).to_string()).collect();
-    let action = est_action(n);
-    let choisis = if action { choisir(&tous, n, &avec(|e| e.derniers.clone())) } else { Vec::new() };
+    let (derniers, sans_outil) = avec(|e| (e.derniers.clone(), e.sans_outil));
+    // Phrase courte juste après une action (« exécute-la », « oui vas-y », « l'autre », « encore ») : sans verbe
+    // d'action, mais c'est la suite. On lui redonne les outils de cette action, sinon elle ne peut que parler.
+    let suite = !derniers.is_empty() && sans_outil <= 1 && n.split(' ').count() <= 5;
+    let action = est_action(n) || suite;
+    let mut choisis = if action { choisir(&tous, n, &derniers) } else { Vec::new() };
+    if besoin_d_internet(n) && tous.iter().any(|o| OUTILS_INTERNET.contains(&nom_outil(o))) {
+        for o in tous.iter().filter(|o| OUTILS_INTERNET.contains(&nom_outil(o))) {
+            if !choisis.iter().any(|c| nom_outil(c) == nom_outil(o)) {
+                choisis.push(o.clone());
+            }
+        }
+        // juste après la question, sinon l'IA répond de mémoire (parfois avec une info dépassée)
+        messages.push(json!({"role": "system", "content": "Si la réponse a pu changer depuis tes connaissances (actualité, \
+sport, « le dernier… », prix, sorties…), appelle d'abord web_search au lieu de répondre de mémoire. Si la question porte \
+sur la page ouverte dans Chrome, appelle lire_onglet (ou capture_onglet pour la voir). Même si tu l'as déjà fait plus tôt, rappelle l'outil au lieu de recopier une ancienne réponse : la page ou la situation a pu changer. Sinon, réponds normalement."}));
+        crate::sys::log("cerveau : outils Internet proposés");
+    }
+    if choisis.iter().any(|o| nom_outil(o) == "fenetre") {
+        messages.push(json!({"role": "system", "content": "L'outil fenetre marche sur TOUTES les fenêtres et pages \
+affichées, quelle que soit l'application : pour réduire, mettre en petit, agrandir, mettre en plein écran, remettre ou \
+fermer ce qui est à l'écran, appelle-le (nom vide = la fenêtre devant l'utilisateur). Ne dis jamais qu'il te manque \
+un outil pour cette page ou cette appli."}));
+    }
     let filtrer = |appels: Vec<(String, Value)>| -> Vec<(String, Value)> {
         let (bons, inconnus): (Vec<_>, Vec<_>) = appels.into_iter().partition(|a| connus.contains(&a.0));
         if !inconnus.is_empty() {
@@ -683,13 +849,18 @@ explication que s'il te le demande."
     // Premier appel. Sans outil à proposer, la réponse part en direct, phrase par phrase.
     let mut dit = String::new();
     let mut menti = false;
+    let mut annule = false;
     let premier = if choisis.is_empty() {
         let mut f = |p: &str| {
-            if pretend_agir(&normaliser(p), false) {
+            if pretend_agir(p, false) || ecrit_un_outil(p, &connus) {
                 menti = true;
                 return false;
             }
-            sur_phrase(p);
+            if !sur_phrase(p) {
+                // la voix ne lit plus (on lui a coupé la parole) : on arrête l'IA tout de suite
+                annule = true;
+                return false;
+            }
             if !dit.is_empty() {
                 dit.push(' ');
             }
@@ -704,6 +875,12 @@ explication que s'il te le demande."
         Ok(r) => r,
         Err(e) => return echec(e),
     };
+    if annule {
+        crate::sys::log("cerveau : coupé par l'utilisateur, l'IA est arrêtée");
+        let mut r = fin(reg, d, texte, dit, Vec::new(), String::new(), &[]);
+        r.reste = String::new();
+        return r;
+    }
     let mut contenu = nettoyer(&r.contenu);
     let mut appels = filtrer(r.appels);
 
@@ -725,7 +902,7 @@ explication que s'il te le demande."
         }
     }
     // Elle prétend avoir agi sans outil : on lui redemande, outils en main.
-    if appels.is_empty() && (menti || pretend_agir(&normaliser(&contenu), action)) {
+    if appels.is_empty() && (menti || pretend_agir(&contenu, action) || ecrit_un_outil(&contenu, &connus)) {
         crate::sys::log(&format!("cerveau : l'IA prétend avoir agi sans outil (« {contenu} ») — je lui redemande"));
         let mut relance = messages.clone();
         relance.push(json!({"role": "assistant", "content": contenu}));
@@ -739,7 +916,7 @@ Si l'utilisateur demande une action, appelle maintenant l'outil adapté. Sinon, 
             }
             Err(_) => contenu.clear(),
         }
-        if appels.is_empty() && (contenu.is_empty() || pretend_agir(&normaliser(&contenu), action)) {
+        if appels.is_empty() && (contenu.is_empty() || pretend_agir(&contenu, action) || ecrit_un_outil(&contenu, &connus)) {
             contenu = "En fait, je n'ai rien fait. Redis-moi précisément ce que tu veux.".into();
         }
         // ce qui a déjà été dit en direct reste dit ; la suite est la nouvelle réponse
@@ -750,7 +927,7 @@ Si l'utilisateur demande une action, appelle maintenant l'outil adapté. Sinon, 
     if !appels.is_empty() {
         completer_chemins(&mut appels, n);
         crate::sys::log(&format!("cerveau : outils choisis par l'IA : {appels:?}"));
-        return executer_tout(reg, d, texte, appels, contenu);
+        return executer_tout(reg, d, texte, appels, contenu, sur_phrase);
     }
     if !dit.is_empty() {
         // tout a été dit en direct
@@ -761,10 +938,30 @@ Si l'utilisateur demande une action, appelle maintenant l'outil adapté. Sinon, 
     fin(reg, d, texte, if contenu.is_empty() { "Je n'ai pas de réponse à ça.".into() } else { contenu }, Vec::new(), String::new(), &[])
 }
 
-fn executer_tout(reg: &Reglages, d: &Demande, texte: &str, appels: Vec<(String, Value)>, contenu: String) -> Rep {
+fn executer_tout(reg: &Reglages, d: &Demande, texte: &str, appels: Vec<(String, Value)>, contenu: String, sur_phrase: &mut dyn FnMut(&str) -> bool) -> Rep {
     let noms: Vec<String> = appels.iter().map(|a| a.0.clone()).collect();
-    let resultats: Vec<Res> = appels.iter().map(|(nom, args)| executer(nom, args, d.python)).collect();
-    avec(|e| e.derniers = noms);
+    let (mut attente_dite, mut coupe) = (false, false);
+    let mut resultats = Vec::new();
+    for (nom, args) in &appels {
+        // outil lent (web, page, capture) : une phrase courte tout de suite, pour ne pas laisser de silence
+        // (elle n'est pas gardée dans l'historique : l'IA la recopierait dans ses réponses suivantes)
+        if !attente_dite && !coupe && OUTILS_INTERNET.contains(&nom.as_str()) {
+            if sur_phrase(PHRASE_ATTENTE) {
+                attente_dite = true;
+            } else {
+                coupe = true;
+            }
+        }
+        resultats.push(executer(nom, args, d.python));
+    }
+    avec(|e| {
+        e.derniers = noms;
+        e.sans_outil = 0;
+    });
+    let pour_l_ia = resultats.iter().any(|r| !r.pour_ia.is_empty() || !r.images.is_empty());
+    if pour_l_ia && !coupe && resultats.iter().all(|r| r.confirmer.is_none()) {
+        return second_tour(reg, d, texte, &appels, resultats, sur_phrase);
+    }
     let phrase = resultats.iter().map(|r| r.dire.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
     let phrase = if !phrase.is_empty() {
         phrase
@@ -774,6 +971,66 @@ fn executer_tout(reg: &Reglages, d: &Demande, texte: &str, appels: Vec<(String, 
         "C'est fait.".into()
     };
     fin(reg, d, texte, phrase, resultats, String::new(), &appels)
+}
+
+/// 2e tour : l'IA reçoit les résultats des outils (et les images) et rédige la réponse parlée, en direct.
+fn second_tour(reg: &Reglages, d: &Demande, texte: &str, appels: &[(String, Value)], resultats: Vec<Res>, sur_phrase: &mut dyn FnMut(&str) -> bool) -> Rep {
+    let mut systeme = consigne(&reg.nom, &reg.consigne, &quelle_ia(reg));
+    systeme.push_str(
+        "\nTu viens d'utiliser des outils : leurs résultats sont dans la conversation. Réponds maintenant à la question \
+en une ou deux phrases parlées (plus seulement si on te demande un résumé ou une explication), en t'appuyant sur ces \
+résultats. Ne lis ni les liens, ni les noms d'outils, ni les numéros des résultats. Si les résultats ne donnent pas \
+la réponse, dis-le simplement.",
+    );
+    let mut messages = vec![json!({"role": "system", "content": systeme})];
+    messages.extend(avec(|e| e.histo.iter().flatten().cloned().collect::<Vec<_>>()));
+    messages.push(json!({"role": "user", "content": texte}));
+    let liste: Vec<Value> = appels.iter().map(|(nom, args)| json!({"function": {"name": nom, "arguments": args}})).collect();
+    messages.push(json!({"role": "assistant", "content": "", "tool_calls": liste}));
+    for ((nom, _), r) in appels.iter().zip(&resultats) {
+        let contenu = if r.pour_ia.is_empty() { &r.dire } else { &r.pour_ia };
+        messages.push(json!({"role": "tool", "tool_name": nom, "content": contenu}));
+    }
+    let images: Vec<&String> = resultats.iter().flat_map(|r| &r.images).collect();
+    if !images.is_empty() {
+        messages.push(json!({"role": "user", "content": "Voici la capture de l'onglet.", "images": images}));
+    }
+    let connus: Vec<String> = appels.iter().map(|a| a.0.clone()).collect();
+    let (mut dit, mut arrete) = (String::new(), false);
+    let mut f = |p: &str| {
+        if ecrit_un_outil(p, &connus) {
+            return true; // jamais lu à voix haute
+        }
+        if !sur_phrase(p) {
+            arrete = true;
+            return false;
+        }
+        if !dit.is_empty() {
+            dit.push(' ');
+        }
+        dit.push_str(p);
+        true
+    };
+    let r = ia::discuter(&requete(&messages, &[], 400, false, reg), Some(&mut f as &mut dyn FnMut(&str) -> bool));
+    let secours = || resultats.iter().map(|r| r.dire.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+    match r {
+        Ok(_) if arrete || !dit.is_empty() => {
+            // tout a été dit en direct (ou on lui a coupé la parole)
+            let mut rep = fin(reg, d, texte, dit, resultats, String::new(), appels);
+            rep.reste = String::new();
+            rep
+        }
+        Ok(r2) => {
+            // le service n'a rien donné en direct : on prend sa réponse entière
+            let c = nettoyer(&r2.contenu);
+            let reponse = if c.is_empty() || ecrit_un_outil(&c, &connus) { secours() } else { c };
+            fin(reg, d, texte, reponse, resultats, String::new(), appels)
+        }
+        Err(_) => {
+            let s = secours();
+            fin(reg, d, texte, s, resultats, String::new(), appels)
+        }
+    }
 }
 
 /// Range l'échange en mémoire, garde la question en attente s'il y en a une, et prévient les modules.
@@ -787,7 +1044,8 @@ fn fin(reg: &Reglages, d: &Demande, texte: &str, reponse: String, resultats: Vec
         let liste: Vec<Value> = appels.iter().map(|(nom, args)| json!({"function": {"name": nom, "arguments": args}})).collect();
         echange.push(json!({"role": "assistant", "content": "", "tool_calls": liste}));
         for ((nom, _), r) in appels.iter().zip(&resultats) {
-            let court: String = r.dire.chars().take(400).collect();
+            let source = if r.pour_ia.is_empty() { &r.dire } else { &r.pour_ia };
+            let court: String = source.chars().take(600).collect();
             echange.push(json!({"role": "tool", "tool_name": nom, "content": court}));
         }
     }
@@ -798,6 +1056,9 @@ fn fin(reg: &Reglages, d: &Demande, texte: &str, reponse: String, resultats: Vec
     avec(|e| {
         if let Some(q) = question {
             e.attente = Some(Attente { cote: q.confirmer.unwrap_or(Cote::Rust(0)), annuler: q.annuler, quand: Instant::now() });
+        }
+        if appels.is_empty() {
+            e.sans_outil += 1;
         }
         e.histo.push_back(echange);
         while e.histo.len() > reg.historique.max(1) {
@@ -842,9 +1103,32 @@ mod tests {
         assert!(pretend_agir("c'est supprime essai txt", true) && pretend_agir("le fichier a ete cree", true));
         assert!(pretend_agir("les fichiers sont supprimes", true) && pretend_agir("je supprime le fichier", true));
         assert!(!pretend_agir("le fichier a ete cree en 1990", false));
+        // décrire un état n'est pas mentir (vu le 2026-11-18 : ses vraies réponses étaient jetées)
+        assert!(!pretend_agir("Je ne sais pas quelle application tu utilises. Je peux ouvrir Chrome si tu veux, ou regarder quelles fenêtres sont ouvertes pour voir si un navigateur est déjà lancé. Tu préfères quoi ?", true));
+        assert!(!pretend_agir("Je ne peux pas scanner ton PC pour voir quelles applications sont installées.", true));
+        assert!(!pretend_agir("Discord est ouvert ?", true));
+        assert!(pretend_agir("Voilà. Ton micro est coupé.", true) && pretend_agir("Les fichiers sont supprimés !", true));
+        assert!(pretend_agir("Je lance Chrome avec PowerShell, en tapant la commande Start-Process chrome.", true));
+        // les phrases de suite et les « oui » qui donnent une autorisation
+        for p in ["execute la", "vas y mets la dans powershell", "va sur vinted", "utilise powershell", "fais le", "tu as mon autorisation"] {
+            assert!(est_action(p), "{p}");
+        }
+        for p in ["tu as mon autorisation", "je t'autorise", "execute la", "lance le", "oui vas y"] {
+            assert!(est_oui(p), "{p}");
+        }
+        assert!(!est_oui("lance le minuteur") && !est_oui("execute la commande dir"));
         assert!(dit_ne_pas_savoir("desole je ne sais pas encore faire ca"));
         assert!(plusieurs_ordres("ouvre chrome et mets un minuteur") && !plusieurs_ordres("ouvre chrome"));
         assert!(est_oubli("oublie tout") && !est_oubli("oublie ce fichier"));
+    }
+
+    #[test]
+    fn outil_ecrit_en_texte() {
+        let connus = vec!["ouvrir_application".to_string(), "aller_onglet".to_string(), "alarme".to_string()];
+        assert!(ecrit_un_outil("ouvrir_application Chrome", &connus));
+        assert!(ecrit_un_outil("<tool_call> {\"name\": \"x\"}", &connus));
+        assert!(!ecrit_un_outil("J'ouvre Chrome pour toi.", &connus));
+        assert!(!ecrit_un_outil("Ton alarme sonne à 7 heures.", &connus));
     }
 
     #[test]
@@ -875,7 +1159,7 @@ mod tests {
         tous.push(outil("regler_volume", "Monte ou baisse le volume du son."));
         tous.push(outil("sonner_telephone", "Fait sonner le téléphone pour le retrouver."));
         let c = choisir(&tous, "fais sonner mon telephone", &[]);
-        assert!(c.len() <= MAX_OUTILS);
+        assert!(c.len() <= crate::ia::max_outils());
         assert_eq!(nom_outil(&c[0]), "sonner_telephone");
         let c = choisir(&tous, "monte le volume", &[]);
         assert_eq!(nom_outil(&c[0]), "regler_volume");
@@ -973,5 +1257,13 @@ mod tests {
         assert_eq!(a, vec![("lancer_minuteur".to_string(), json!({"duree": "5 minutes"})), ("x".to_string(), json!({"a": 1}))]);
         assert_eq!(duree_parlee(5400), "1 heure 30 minutes");
         assert_eq!(duree_parlee(45), "45 secondes");
+    }
+
+    #[test]
+    fn questions_qui_demandent_internet() {
+        assert!(besoin_d_internet(&normaliser("Qui a gagné la dernière Coupe du monde de rugby ?")));
+        assert!(besoin_d_internet(&normaliser("Résume la page que j'ai ouverte dans Chrome")));
+        assert!(!besoin_d_internet(&normaliser("Raconte-moi une blague")));
+        assert!(!besoin_d_internet(&normaliser("Combien font 7 fois 8 ?")));
     }
 }

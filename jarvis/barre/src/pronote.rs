@@ -54,6 +54,12 @@ pub struct Lesson {
     pub status: String,
     pub canceled: bool,
     pub color: [u8; 3],
+    /// PAI : pourquoi je ne vais pas à ce cours (vide = j'y vais). Rempli par `pai::appliquer`.
+    #[serde(default)]
+    pub manque: String,
+    /// Créneau ajouté par moi dans mon emploi du temps (pas un cours de Pronote).
+    #[serde(default)]
+    pub perso: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -63,10 +69,18 @@ pub enum Alert {
     Absent,
     Room,
     Info,
+    /// PAI : l'élève ne va pas à ce cours.
+    Skip,
 }
 
 impl Lesson {
     pub fn alert(&self) -> Alert {
+        if !self.manque.is_empty() {
+            return Alert::Skip;
+        }
+        self.alert_pronote()
+    }
+    fn alert_pronote(&self) -> Alert {
         let s = self.status.to_lowercase();
         if s.contains("absent") {
             Alert::Absent
@@ -86,11 +100,12 @@ impl Lesson {
             Alert::Absent => "PROF ABSENT".into(),
             Alert::Room => "CHANGEMENT DE SALLE".into(),
             Alert::Info => self.status.to_uppercase(),
+            Alert::Skip => "TU N'Y VAS PAS".into(),
             Alert::None => String::new(),
         }
     }
     pub fn bad(&self) -> bool {
-        matches!(self.alert(), Alert::Canceled | Alert::Absent)
+        matches!(self.alert_pronote(), Alert::Canceled | Alert::Absent)
     }
 }
 
@@ -163,7 +178,8 @@ impl School {
     /// Cours en cours ou prochain cours, et celui d'après. Si deux cours se superposent
     /// (cours annulé + remplacement), on garde celui qui a lieu.
     pub fn next(&self, now: NaiveDateTime) -> (Option<&Lesson>, Option<&Lesson>) {
-        let mut v: Vec<&Lesson> = self.lessons.iter().filter(|l| l.end > now).collect();
+        // PAI : les cours où je ne vais pas ne sont jamais « le prochain cours ».
+        let mut v: Vec<&Lesson> = self.lessons.iter().filter(|l| l.end > now && l.manque.is_empty()).collect();
         v.sort_by_key(|l| (l.start, l.bad()));
         v.dedup_by(|b, a| a.start == b.start);
         (v.first().copied(), v.get(1).copied())
@@ -728,6 +744,7 @@ impl Sess {
             status: s(&c["Statut"]),
             canceled: truthy(&c["estAnnule"]),
             color: color(&c["CouleurFond"]),
+            ..Default::default()
         })
     }
 
@@ -1171,8 +1188,10 @@ impl Worker {
                 new.push((1, format!("Nouveau devoir — {}", h.subject), format!("Pour le {} : {}", h.due.format("%d/%m"), h.text)));
             }
         }
+        let pai = crate::pai::actuel();
         for l in &sc.lessons {
-            if l.bad() && l.start > now && l.start < now + Duration::days(7) && self.cache.seen.insert(format!("c:{}:{}", l.id, l.start)) {
+            // PAI : pas d'alerte « cours annulé » pour un cours où je ne vais pas
+            if l.bad() && crate::pai::pourquoi(&pai, l).is_none() && l.start > now && l.start < now + Duration::days(7) && self.cache.seen.insert(format!("c:{}:{}", l.id, l.start)) {
                 let what = if l.alert() == Alert::Absent { "Prof absent" } else { "Cours annulé" };
                 new.push((2, format!("{what} — {}", l.subject), format!("{} à {}", crate::widgets::day_label(l.start.date(), now.date()), l.start.format("%H:%M"))));
             }
@@ -1247,8 +1266,10 @@ fn google_push(vault: &Mutex<Secrets>, sc: &School) -> Result<usize, String> {
     let f = |d: NaiveDateTime| d.format("%Y-%m-%dT%H:%M:%S").to_string();
     let now = Local::now().naive_local();
     let mut want: Vec<(String, Value, String)> = Vec::new();
+    let pai = crate::pai::actuel();
     for l in &sc.lessons {
-        if l.end < now - Duration::days(1) {
+        // PAI : les cours où je ne vais pas ne vont pas dans mon agenda
+        if l.end < now - Duration::days(1) || crate::pai::pourquoi(&pai, l).is_some() {
             continue;
         }
         let mut title = l.subject.clone();
@@ -1357,6 +1378,7 @@ pub fn demo() -> School {
         status: status.into(),
         canceled: status.contains("annul") || status.contains("absent"),
         color: c,
+        ..Default::default()
     };
     let mut lessons = vec![
         lesson(first, 55, "Mathématiques", "M. Durand", "B12", "", [90, 200, 250]),

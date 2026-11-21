@@ -96,6 +96,7 @@ pub fn glyph(t: Tab) -> char {
         Tab::Batteries => '\u{E83F}',
         Tab::JSettings => '\u{E713}',
         Tab::Accounts => '\u{E77B}',
+        Tab::History => '\u{E81C}',
     }
 }
 
@@ -243,6 +244,12 @@ pub fn icon_drawn(c: &mut Ctx, t: Tab, cx: f32, cy: f32, col: Rgba) {
             c.ring(cx, cy - 3.0, 3.5, col, lw);
             c.rr_stroke(cx - 6.5, cy + 2.0, 13.0, 7.0, 3.5, col, lw);
         }
+        Tab::History => {
+            // horloge avec une flèche qui revient en arrière
+            c.ring(cx, cy, 7.5, col, lw);
+            c.line(cx, cy, cx, cy - 4.5, lw, col);
+            c.line(cx, cy, cx + 3.5, cy + 2.0, lw, col);
+        }
         Tab::JSettings => {
             for i in 0..8 {
                 let a = i as f32 * std::f32::consts::PI / 4.0;
@@ -378,7 +385,9 @@ pub(crate) fn left_card(c: &mut Ctx, r: &R, x: f32, y: f32, w: f32, h: f32) {
             let sub = if r.jarvis.online() && r.jarvis.state != "repos" {
                 match r.jarvis.state.as_str() {
                     "ecoute" => "t'écoute…",
+                    "parole" => "t'entend…",
                     "reflechit" => "réfléchit…",
+                    "parle_ecoute" => "finit et t'écoute",
                     _ => "parle…",
                 }
                 .to_string()
@@ -841,7 +850,8 @@ pub(crate) fn calendar_page(c: &mut Ctx, r: &R, w: f32) {
         let x = SIDE + k as f32 * (colw + 20.0);
         caps(c, x, 18.0, t.fg2, &widgets::day_label(*day, today));
         let mut y = 30.0;
-        let list: Vec<_> = p.lessons.iter().filter(|l| l.start.date() == *day).collect();
+        // dans l'ordre de la journée ; les cours où je ne vais pas (PAI) sont grisés et barrés
+        let list = p.lessons_on(*day);
         if list.is_empty() {
             c.text(Wt::Regular, 13.0, x, y + 20.0, t.fg3, "Pas cours");
         }
@@ -856,9 +866,10 @@ pub(crate) fn calendar_page(c: &mut Ctx, r: &R, w: f32) {
             let room = if l.room.is_empty() { String::new() } else { widgets::room_txt(&l.room) };
             let rw = c.text_r(Wt::Regular, 11.5, x + colw - 8.0, y + 18.5, t.fg3, &room);
             let sub = c.fit(Wt::Semibold, 13.0, &l.subject, colw - 70.0 - rw);
-            let sw = c.text(Wt::Semibold, 13.0, x + 58.0, y + 18.5, if l.bad() { t.fg3 } else { t.fg }, &sub);
-            if l.bad() {
-                c.line(x + 58.0, y + 14.0, x + 58.0 + sw, y + 14.0, 1.4, RED);
+            let gris = l.bad() || !l.manque.is_empty();
+            let sw = c.text(Wt::Semibold, 13.0, x + 58.0, y + 18.5, if gris { t.fg3 } else { t.fg }, &sub);
+            if gris {
+                c.line(x + 58.0, y + 14.0, x + 58.0 + sw, y + 14.0, 1.4, if l.bad() { RED } else { t.fg3 });
             }
             y += 32.0;
         }

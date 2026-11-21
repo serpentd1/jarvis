@@ -3,13 +3,14 @@ Mon PC…). L'île lit et modifie les données de Jarvis par son API locale (/ap
 from . import Resultat, masquer_codes
 
 SECTIONS = ["accueil", "taches", "rappels", "habitudes", "copies", "routines", "memoire", "musique", "appareils",
-            "pc", "telephone", "pronote", "mails", "discord", "minuteurs", "parametres"]
+            "pc", "telephone", "pronote", "mails", "discord", "minuteurs", "parametres", "comptes", "historique"]
 # ce qu'on dit -> section de la grande île
 MOTS = {"taches": "taches", "rappels": "rappels", "habitudes": "habitudes", "copies": "copies",
         "presse papiers": "copies", "routines": "routines", "memoire": "memoire", "souvenirs": "memoire",
         "carte mentale": "memoire", "batteries": "appareils"}
 NOMS = {"taches": "tes tâches", "rappels": "tes rappels", "habitudes": "tes habitudes", "copies": "tes copiés",
-        "routines": "tes routines", "memoire": "ma mémoire", "appareils": "tes batteries"}
+        "routines": "tes routines", "memoire": "ma mémoire", "appareils": "tes batteries",
+         "comptes": "tes comptes", "historique": "l'historique de nos conversations"}
 
 
 def telephone_affiche(tel):

@@ -2,6 +2,7 @@
 Si Givre n'est pas lancé, chaque appel échoue en silence et renvoie None : Jarvis marche aussi seul.
 """
 import logging
+import queue
 import subprocess
 import threading
 import time
@@ -25,6 +26,8 @@ class Givre:
         self.url = url.rstrip("/")
         self._cache, self._cache_t = None, 0.0
         self._absent_jusqua = 0.0
+        self._file_jarvis = None
+        self._verrou_jarvis = threading.Lock()
 
     # ── lecture ──────────────────────────────────────────────
     def disponible(self) -> bool:
@@ -70,6 +73,10 @@ class Givre:
         """quoi = "grande" déplie l'île en grand, sur `section` (taches, rappels, memoire, pc…) si donnée."""
         return self._appel("POST", "/ouvrir", {"quoi": quoi, "n": n, **({"section": section} if section else {})})
 
+    def ne_pas_deranger(self, actif: bool | None = None):
+        """Ne pas déranger de l'île (plus de bulles ni de sons) ; None = juste lire l'état."""
+        return self._appel("POST", "/ne-pas-deranger", {} if actif is None else {"actif": bool(actif)})
+
     def actualiser_meteo(self):
         return self._appel("POST", "/meteo/actualiser", {})
 
@@ -81,15 +88,27 @@ class Givre:
     def notif(self, titre: str, texte: str, source: str = "jarvis"):
         self._en_fond("POST", "/notif", {"titre": titre, "texte": texte, "source": source})
 
-    def etat_jarvis(self, etat: str, texte: str = "", question: str = "", reponse: str = "", duree: float = 0.0):
-        """Montre dans l'île si Jarvis écoute, réfléchit ou parle (et la conversation).
-        `duree` : secondes que dure la phrase dite, pour l'afficher mot par mot."""
+    def etat_jarvis(self, etat: str, texte: str = "", question: str = "", reponse: str = "", duree: float = 0.0,
+                    toi: str = ""):
+        """Montre dans l'île si Jarvis écoute, entend ta voix, réfléchit ou parle (et la conversation).
+        `duree` : secondes que dure la phrase dite, pour l'afficher mot par mot. `toi` : ta phrase."""
         donnees = {"etat": etat, "texte": texte}
         if duree > 0:
             donnees["duree"] = round(duree, 2)
+        if toi:
+            donnees["toi"] = toi
         if question or reponse:
             donnees.update(question=question, reponse=reponse)
-        self._en_fond("POST", "/jarvis", donnees)
+        # un seul fil, dans l'ordre : sinon « parle » pourrait arriver après « parle_ecoute » et l'île se tromperait
+        with self._verrou_jarvis:
+            if self._file_jarvis is None:
+                self._file_jarvis = queue.Queue()
+                threading.Thread(target=self._envoyer_jarvis, daemon=True, name="ile-jarvis").start()
+        self._file_jarvis.put(donnees)
+
+    def _envoyer_jarvis(self):
+        while True:
+            self._appel("POST", "/jarvis", self._file_jarvis.get(), 1.5)
 
     # ── lancement ────────────────────────────────────────────
     def trouver_exe(self, chemin_config: str = ""):

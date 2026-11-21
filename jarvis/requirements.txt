@@ -12,6 +12,9 @@ nvidia-cublas-cu12   # bibliothèques CUDA pour faster-whisper
 nvidia-cudnn-cu12==9.*
 piper-tts            # texte -> voix, en local (voix rapides)
 kokoro-onnx          # texte -> voix, plus naturel
+edge-tts             # texte -> voix en ligne (Denise, Henri…), gratuit, aucune mémoire graphique
+miniaudio            # décode le MP3 de la voix en ligne, morceau par morceau
+livekit              # anti-écho WebRTC : Jarvis ne se coupe pas en entendant sa propre voix
 requests             # lien avec la barre (l'IA : LM Studio, clé d'API…) + secours Ollama
 aiohttp              # API locale de Jarvis (île Givre + extension Chrome)
 pystray              # icône près de l'horloge
@@ -22,3 +25,5 @@ winrt-runtime        # contrôles média de Windows (pause, suivant… dans Chro
 winrt-Windows.Media.Control
 winrt-Windows.Foundation
 winrt-Windows.Foundation.Collections
+ddgs                 # recherche sur Internet (DuckDuckGo, sans clé) pour l'IA
+trafilatura          # texte principal d'une page web

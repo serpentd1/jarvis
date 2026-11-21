@@ -41,7 +41,7 @@ Etape "Rassemblement des fichiers à installer"
 $charge = Join-Path $dist "charge"
 Remove-Item $charge -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $charge | Out-Null
-Copy-Item "$jarvis\main.py", "$jarvis\requirements.txt", "$jarvis\LISEZMOI.md", "$jarvis\VERSION", $lanceur $charge
+Copy-Item "$jarvis\main.py", "$jarvis\requirements.txt", "$jarvis\LISEZMOI.md", "$jarvis\VERSION", "$jarvis\prompt-systeme.defaut.txt", $lanceur $charge
 # Réglages NEUTRES (config.defaut.toml), jamais ton config.toml : il contient tes contacts, ta ville…
 Copy-Item "$jarvis\config.defaut.toml" "$charge\config.toml"
 if (Test-Path "$jarvis\DEPOT") { Copy-Item "$jarvis\DEPOT" $charge }

@@ -5,21 +5,25 @@ use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_ICONWARNING, MB_OK, MB_YESNO};
 
-use crate::{boite, poster, WM_ETAT, WM_FINI, WM_JOURNAL, WM_PROGRES};
+use crate::{boite, poster, profils, WM_ETAT, WM_FINI, WM_JOURNAL, WM_PROGRES};
 
 pub static CODE_SORTIE: AtomicI32 = AtomicI32::new(0);
 static JOURNAL: Mutex<String> = Mutex::new(String::new());
 static CHARGE: &[u8] = include_bytes!(env!("JARVIS_CHARGE"));
 const SANS_FENETRE: u32 = 0x0800_0000;
 const DETACHE: u32 = 0x0000_0008 | 0x0000_0200;
-/// Petit modèle téléchargé avec `lms get` (≈ 2,5 Go).
-const MODELE_IA: &str = "qwen3-4b";
+/// Jarvis a déjà été lancé avant la fin (le modèle local finissait de se télécharger) : pas de 2e lancement.
+static LANCE: AtomicBool = AtomicBool::new(false);
+/// Pour le temps restant : début de l'installation, étape affichée, dernière estimation (en minutes).
+static DEBUT: Mutex<Option<Instant>> = Mutex::new(None);
+static ETAPE: Mutex<String> = Mutex::new(String::new());
+static RESTE: AtomicU64 = AtomicU64::new(u64::MAX);
 const PAS_LENT: &str = "PC trop lent ou pas de place ? Tu peux aussi coller une clé gratuite (Google Gemini ou Groq) \
 dans les réglages de Jarvis : clic droit sur la barre, Paramètres, IA.";
 const CLE_DESINSTALLATION: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Jarvis";
@@ -65,17 +69,37 @@ fn journal(t: impl Into<String>) {
 fn etat(t: impl Into<String>) {
     let t = t.into();
     journal(format!("── {t}"));
+    if let Ok(mut e) = ETAPE.lock() {
+        *e = t.clone();
+    }
+    RESTE.store(u64::MAX, Ordering::Relaxed);
     poster(WM_ETAT, 0, Some(t));
 }
 
+/// La barre de progression, et le temps restant à côté de l'étape (« — encore ≈ 4 min »).
 fn progres(p: usize) {
-    poster(WM_PROGRES, p.min(1000), None);
+    let p = p.min(1000);
+    poster(WM_PROGRES, p, None);
+    let Some(debut) = DEBUT.lock().ok().and_then(|d| *d) else { return };
+    let ecoule = debut.elapsed().as_secs();
+    if p < 40 || p >= 1000 || ecoule < 15 {
+        return;
+    }
+    let minutes = (ecoule * (1000 - p as u64) / p as u64 + 30) / 60;
+    if RESTE.swap(minutes, Ordering::Relaxed) != minutes {
+        let etape = ETAPE.lock().map(|e| e.clone()).unwrap_or_default();
+        let reste = if minutes == 0 { "moins d'une minute".to_string() } else { format!("≈ {minutes} min") };
+        poster(WM_ETAT, 0, Some(format!("{etape} — encore {reste}")));
+    }
 }
 
 // ── installation ─────────────────────────────────────────────────────────────
 
 pub fn installer(o: &Options) {
     let debut = Instant::now();
+    if let Ok(mut d) = DEBUT.lock() {
+        *d = Some(debut);
+    }
     let resultat = etapes(o);
     let minutes = (debut.elapsed().as_secs() + 30) / 60;
     match &resultat {
@@ -90,7 +114,7 @@ pub fn installer(o: &Options) {
         }
     }
     let _ = std::fs::write(o.dossier.join("installation.log"), JOURNAL.lock().map(|j| j.clone()).unwrap_or_default());
-    if o.relancer {
+    if o.relancer && !LANCE.load(Ordering::Relaxed) {
         lancer_jarvis(&o.dossier); // mise à jour automatique : Jarvis revient tout seul (même après une erreur)
     }
     CODE_SORTIE.store(if resultat.is_ok() { 0 } else { 1 }, Ordering::Relaxed);
@@ -119,14 +143,33 @@ fn etapes(o: &Options) -> Result<(), String> {
     }
     journal(format!("Fichiers installés dans {}", d.display()));
 
-    let gpu = carte_nvidia();
+    etat("Je regarde ton PC");
+    let materiel = profils::detecter();
+    let profil = profils::choisir(&materiel);
+    journal(format!("Ton PC : {} → profil « {} » ({}).", profils::resume(&materiel), profil.nom, profil.pour));
+    // la barre de Jarvis reprendra cette détection (sans refaire le test)
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dossier = Path::new(&appdata).join(r"Jarvis\barre");
+        let _ = std::fs::create_dir_all(&dossier);
+        let _ = std::fs::write(dossier.join("materiel.txt"), profils::vers_texte(&materiel));
+    }
+    if ancienne_config.is_none() {
+        adapter_config(d, profil, &materiel)?;
+    }
+    // L'IA sur ce PC (LM Studio et le modèle du profil) se télécharge EN MÊME TEMPS que le reste.
+    let ia_locale = if o.lmstudio {
+        let (d2, modele) = (d.to_path_buf(), profil.modele_local.to_string());
+        journal(format!("Modèle d'IA {modele} (≈ {:.1} Go) : téléchargement en arrière-plan, pendant le reste.", profil.taille_go));
+        Some(std::thread::spawn(move || modele_local(&d2, &modele)))
+    } else {
+        journal("IA sur ce PC : pas installée (tu utiliseras ta clé NVIDIA : mode ultra performant).");
+        None
+    };
+    let gpu = materiel.nvidia || carte_nvidia();
     if gpu {
         journal("Carte graphique NVIDIA trouvée : ta voix sera transcrite par la carte graphique.");
     } else {
         journal("Pas de carte NVIDIA : la transcription se fera sur le processeur, avec un modèle plus petit.");
-        if ancienne_config.is_none() {
-            adapter_config_sans_gpu(d)?;
-        }
     }
 
     etat("Outil Python (uv)");
@@ -136,34 +179,74 @@ fn etapes(o: &Options) -> Result<(), String> {
     etat("Python et ses bibliothèques (≈ 1,5 Go : quelques minutes)");
     executer(&uv, &["venv", "--allow-existing", "--python", "3.12", ".venv"], d, 70, 100)?;
     let exigences = if gpu { "requirements.txt".to_string() } else { exigences_sans_gpu(d)? };
-    executer(&uv, &["pip", "install", "--python", r".venv\Scripts\python.exe", "-r", &exigences], d, 100, 450)?;
+    // déjà à jour (même liste que la dernière fois) : on saute. Sinon uv garde ses téléchargements en cache.
+    let marque = d.join(r".venv\jarvis-exigences.txt");
+    let liste = std::fs::read_to_string(d.join(&exigences)).unwrap_or_default();
+    if !liste.is_empty() && std::fs::read_to_string(&marque).ok().as_deref() == Some(liste.as_str()) {
+        journal("Bibliothèques Python : déjà à jour, je saute cette étape.");
+        progres(450);
+    } else {
+        executer(&uv, &["pip", "install", "--python", r".venv\Scripts\python.exe", "-r", &exigences], d, 100, 450)?;
+        let _ = std::fs::write(&marque, &liste);
+    }
 
     etat("Modèles de voix et d'écoute (≈ 1,7 Go)");
     executer(d.join(r".venv\Scripts\python.exe"), &[r"outils\telecharger_modeles.py"], d, 450, 700)?;
 
-    etat("Moteur d'IA (LM Studio, gratuit)");
-    progres(700);
-    if trouver_lms().is_none() && o.lmstudio {
-        installer_lmstudio(d);
-    }
-    match trouver_lms() {
-        Some(lms) => {
-            etat(format!("Modèle d'IA {MODELE_IA} (≈ 2,5 Go)"));
-            if let Err(e) = executer(&lms, &["get", MODELE_IA, "--yes"], d, 760, 960) {
-                journal(format!("Le modèle n'a pas pu être téléchargé ({e}). Ouvre LM Studio et télécharge Qwen3 4B à la main."));
-            }
-        }
-        None => journal("LM Studio n'est pas encore prêt. Ouvre LM Studio une fois, puis télécharge un modèle (par exemple Qwen3 4B)."),
-    }
-    journal(PAS_LENT);
-
     if o.raccourcis {
         etat("Raccourcis et menu Démarrer");
-        progres(970);
+        progres(720);
         raccourcis(d, o)?;
         inscrire_desinstallation(d)?;
     }
+
+    if let Some(fil) = ia_locale {
+        if !fil.is_finished() {
+            // tout le reste est prêt : Jarvis marche déjà (avec une clé d'IA), le modèle finit en arrière-plan
+            lancer_jarvis(d);
+            LANCE.store(true, Ordering::Relaxed);
+            journal("Jarvis est lancé ! Le modèle sur ce PC finit de se télécharger : en attendant, Jarvis utilise ta clé d'IA si tu en as une.");
+            etat("Modèle d'IA : je finis le téléchargement en arrière-plan");
+            progres(760);
+        }
+        let _ = fil.join();
+    }
+    journal(PAS_LENT);
     Ok(())
+}
+
+/// LM Studio puis le modèle du profil, dans un fil à part (sans toucher à la barre de progression).
+/// Déjà là : on saute. La quantification demandée n'existe pas : on prend la version conseillée par LM Studio.
+fn modele_local(d: &Path, modele: &str) {
+    if trouver_lms().is_none() {
+        installer_lmstudio(d);
+    }
+    let Some(lms) = trouver_lms() else {
+        journal("LM Studio n'est pas encore prêt. Ouvre-le une fois : Jarvis prendra le modèle de ton profil.");
+        return;
+    };
+    let base = modele.split('@').next().unwrap_or(modele);
+    if lms_a(&lms, base) {
+        journal(format!("Modèle {base} : déjà sur ce PC, je saute."));
+        return;
+    }
+    for essai in [modele, base] {
+        if executer(&lms, &["get", essai, "--yes"], d, 0, 0).is_ok() || lms_a(&lms, base) {
+            journal(format!("Modèle {essai} : prêt."));
+            return;
+        }
+    }
+    journal(format!("Le modèle {modele} n'a pas pu être téléchargé. Ouvre LM Studio et télécharge-le à la main."));
+}
+
+/// Le modèle est déjà dans LM Studio (`lms ls`).
+fn lms_a(lms: &Path, base: &str) -> bool {
+    Command::new(lms)
+        .arg("ls")
+        .creation_flags(SANS_FENETRE)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains(&base.to_lowercase()))
+        .unwrap_or(false)
 }
 
 // ── outils ───────────────────────────────────────────────────────────────────
@@ -222,7 +305,10 @@ fn sans_ansi(t: &str) -> String {
 /// Lance un programme sans fenêtre et recopie ce qu'il affiche dans le journal.
 fn executer(programme: impl AsRef<OsStr>, args: &[&str], dossier: &Path, debut: usize, fin: usize) -> Result<(), String> {
     let nom = Path::new(programme.as_ref()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    progres(debut);
+    let barre = fin > 0;
+    if barre {
+        progres(debut);
+    }
     let mut enfant = Command::new(programme.as_ref())
         .args(args)
         .current_dir(dossier)
@@ -253,7 +339,9 @@ fn executer(programme: impl AsRef<OsStr>, args: &[&str], dossier: &Path, debut: 
     for f in fils {
         let _ = f.join();
     }
-    progres(fin);
+    if barre {
+        progres(fin);
+    }
     if statut.success() {
         Ok(())
     } else {
@@ -277,7 +365,9 @@ fn lire_lignes(mut flux: Box<dyn Read + Send>, lignes: &AtomicUsize, debut: usiz
         *dernier = Instant::now();
         journal(ligne);
         let n = lignes.fetch_add(1, Ordering::Relaxed) + 1;
-        progres(debut + (n * 2).min(fin.saturating_sub(debut + 1)));
+        if fin > 0 {
+            progres(debut + (n * 2).min(fin.saturating_sub(debut + 1)));
+        }
     };
     loop {
         let n = match flux.read(&mut bloc) {
@@ -326,13 +416,15 @@ fn carte_nvidia() -> bool {
     reussit("nvidia-smi", &["-L"]) || reussit(r"C:\Windows\System32\nvidia-smi.exe", &["-L"])
 }
 
-fn adapter_config_sans_gpu(d: &Path) -> Result<(), String> {
+/// Nouvelle installation : la transcription de la voix du profil (Whisper « small » sur les petits PC).
+fn adapter_config(d: &Path, p: &profils::Profil, m: &profils::Materiel) -> Result<(), String> {
+    let (modele, appareil, precision) = profils::voix(p, m);
     let chemin = d.join("config.toml");
     let texte = std::fs::read_to_string(&chemin).map_err(|e| e.to_string())?;
     let texte = texte
-        .replacen("modele = \"large-v3-turbo\"", "modele = \"small\"", 1)
-        .replacen("appareil = \"auto\"", "appareil = \"cpu\"", 1)
-        .replacen("precision = \"float16\"", "precision = \"int8\"", 1);
+        .replacen("modele = \"large-v3-turbo\"", &format!("modele = \"{modele}\""), 1)
+        .replacen("appareil = \"auto\"", &format!("appareil = \"{appareil}\""), 1)
+        .replacen("precision = \"int8_float16\"", &format!("precision = \"{precision}\""), 1);
     std::fs::write(&chemin, texte).map_err(|e| e.to_string())
 }
 
@@ -370,14 +462,14 @@ fn trouver_lms() -> Option<PathBuf> {
 
 /// Installe LM Studio avec winget. Si ça échoue, on ouvre la page de téléchargement et on explique quoi faire.
 fn installer_lmstudio(d: &Path) {
-    etat("Installation de LM Studio (le moteur d'IA, gratuit)");
+    journal("── Installation de LM Studio (le moteur d'IA, gratuit), en arrière-plan");
     let ok = executer(
         "winget",
         &["install", "--id", "ElementLabs.LMStudio", "-e", "--silent",
           "--accept-package-agreements", "--accept-source-agreements"],
         d,
-        700,
-        740,
+        0,
+        0,
     );
     if ok.is_err() {
         journal("L'installation automatique de LM Studio n'a pas marché. Je t'ouvre la page de téléchargement : \

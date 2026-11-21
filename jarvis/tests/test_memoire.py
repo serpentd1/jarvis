@@ -85,3 +85,55 @@ def test_memoire_refuse_les_secrets(monkeypatch, tmp_path):
     donnees = api("GET", {})
     assert all("token" not in n["nom"].lower() for n in donnees["noeuds"])
     assert any(n["nom"] == "Minecraft" for n in donnees["noeuds"])
+
+
+class RegistreComplet(RegistreTest):
+    def __init__(self):
+        super().__init__()
+        self.outils, self.regles = {}, []
+
+    def outil(self, nom, _desc, _params, _requis, fonction):
+        self.outils[nom] = fonction
+
+    def regle(self, motif, fonction, **_kwargs):
+        import re
+        self.regles.append((re.compile(motif), fonction))
+
+
+class PontTest:
+    connecte = True
+
+    def commande(self, donnees, _delai):
+        assert donnees == {"commande": "onglet_texte"}
+        return {"ok": True, "url": "https://www.vinted.fr/member/123-exemple", "titre": "Vinted"}
+
+
+def test_retiens_ca_passe_par_l_ia_et_garde_l_adresse(monkeypatch, tmp_path):
+    """Vu le 2026-11-18 : « retiens que c'est ça mon profil » était enregistré mot pour mot, sans l'adresse."""
+    monkeypatch.setattr(stockage, "DOSSIER", tmp_path / "donnees")
+    monkeypatch.setattr(memoire.ollama, "discuter", lambda *a, **k: '{"faits": []}')
+    registre, ctx = RegistreComplet(), ContexteTest()
+    ctx.pont = PontTest()
+    memoire.installer(ctx, registre)
+
+    def raccourci(phrase):
+        n = memoire.normaliser(phrase)
+        for motif, fonction in registre.regles:
+            m = motif.search(n)
+            if m and fonction(m, phrase):
+                return fonction(m, phrase)
+        return None
+
+    # un renvoi à la conversation (« ça », « ce lien ») : pas de raccourci, c'est l'IA qui comprend
+    assert raccourci("Retiens que c'est ça mon profil") is None
+    assert raccourci("Retiens dans ta mémoire que tu dois faire ça à chaque fois") is None
+    assert raccourci("Retiens, ce site-là, c'est Vinted.") is None
+    assert raccourci("Retiens que j'aime le foot") == [("retenir", {"fait": "j'aime le foot"})]
+
+    # la page ouverte dans Chrome : son adresse est gardée
+    registre.outils["retenir"]("cette page est mon profil Vinted")
+    # une commande : gardée mot pour mot
+    registre.outils["retenir"]("Pour lancer Chrome, taper Start-Process chrome dans PowerShell")
+    objets = [n["nom"] for n in registre.apis["memoire"]("GET", {})["noeuds"]]
+    assert any("https://www.vinted.fr/member/123-exemple" in o for o in objets), objets
+    assert any("Start-Process chrome" in o for o in objets), objets

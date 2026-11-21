@@ -61,6 +61,7 @@ pub fn api_name(v: View) -> Option<&'static str> {
         View::Batteries => "appareils",
         View::Pc => "pc",
         View::JSettings => "parametres",
+        View::History => "historique",
         _ => return None,
     })
 }
@@ -84,6 +85,7 @@ pub fn section(name: &str) -> View {
         "minuteurs" => View::Timers,
         "parametres" | "paramètres" => View::JSettings,
         "comptes" => View::Accounts,
+        "historique" | "conversations" => View::History,
         "jarvis" | "chat" => View::Chat,
         _ => View::Main,
     }
@@ -134,6 +136,68 @@ pub fn arr<'a>(v: Option<&'a Value>, key: &str) -> Vec<&'a Value> {
 
 pub fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
+}
+
+// ---------- Liste triable de la mémoire ----------
+
+/// Filtres de la liste de la mémoire (nom affiché, types de souvenirs ; vide = tous).
+pub const MEM_FILTERS: [(&str, &[&str]); 8] = [
+    ("Tous", &[]),
+    ("À trier", &[]),
+    ("Personnes", &["personne"]),
+    ("Goûts", &["preference"]),
+    ("Lieux", &["lieu"]),
+    ("Activités", &["activite", "activité"]),
+    ("Autres", &["ecole", "projet", "habitude", "objet", "evenement", "autre", ""]),
+    ("Gardés", &[]),
+];
+pub const MEM_SORTS: [&str; 3] = ["récents", "plus utilisés", "A → Z"];
+/// Catégories proposées quand on change la couleur d'un souvenir.
+pub const MEM_TYPES: [&str; 9] = ["personne", "preference", "lieu", "activite", "ecole", "projet", "objet", "evenement", "autre"];
+
+/// Minuscules sans accents, pour la recherche.
+pub fn fold(t: &str) -> String {
+    t.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'à' | 'â' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'î' | 'ï' => 'i',
+            'ô' | 'ö' => 'o',
+            'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c => c,
+        })
+        .collect()
+}
+
+/// Raison de nettoyage proposée par Jarvis pour un souvenir (vide = rien à redire).
+pub fn mem_reason<'a>(v: Option<&'a Value>, id: &str) -> &'a str {
+    arr(v, "suggestions").into_iter().find(|x| s(x, "id") == id).map(|x| s(x, "raison")).unwrap_or("")
+}
+
+/// Souvenirs de la liste (sans « Moi »), filtrés, cherchés et triés.
+pub fn mem_rows<'a>(v: Option<&'a Value>, filter: u8, sort: u8, search: &str) -> Vec<&'a Value> {
+    let sugg: Vec<&str> = arr(v, "suggestions").into_iter().map(|x| s(x, "id")).collect();
+    let q = fold(search.trim());
+    let types = MEM_FILTERS[filter as usize % MEM_FILTERS.len()].1;
+    let mut rows: Vec<&Value> = arr(v, "noeuds")
+        .into_iter()
+        .filter(|n| s(n, "id") != "moi")
+        .filter(|n| match filter {
+            1 => sugg.contains(&s(n, "id")),
+            7 => n["garde"].as_bool() == Some(true),
+            _ => types.is_empty() || types.contains(&s(n, "type")),
+        })
+        .filter(|n| q.is_empty() || fold(s(n, "nom")).contains(&q))
+        .collect();
+    let num = |n: &Value, k: &str| n[k].as_f64().unwrap_or(0.0);
+    match sort {
+        1 => rows.sort_by(|a, b| (num(b, "utilise") + num(b, "nb_liens")).total_cmp(&(num(a, "utilise") + num(a, "nb_liens")))),
+        2 => rows.sort_by_key(|n| fold(s(n, "nom"))),
+        _ => rows.sort_by(|a, b| num(b, "vu").max(num(b, "cree")).total_cmp(&num(a, "vu").max(num(a, "cree")))),
+    }
+    rows
 }
 
 // ---------- Carte mentale (mémoire) ----------
@@ -294,5 +358,29 @@ mod tests {
         assert!(d > 80.0 && d < 500.0, "distance {d}");
         assert_eq!(step_number(0.5, 1.0), 0.6);
         assert_eq!(step_number(30.0, -1.0), 29.0);
+    }
+
+    #[test]
+    fn liste_memoire_filtre_cherche_trie() {
+        let v = json!({
+            "noeuds": [
+                {"id": "moi", "nom": "Moi", "type": "moi"},
+                {"id": "maman", "nom": "Maman", "type": "personne", "cree": 1.0, "utilise": 9},
+                {"id": "3h", "nom": "3h", "type": "autre", "cree": 3.0},
+                {"id": "ecole", "nom": "Collège Éluard", "type": "ecole", "cree": 2.0, "garde": true}
+            ],
+            "suggestions": [{"id": "3h", "raison": "heure ou durée seule"}]
+        });
+        let ids = |rows: Vec<&Value>| rows.iter().map(|n| s(n, "id").to_string()).collect::<Vec<_>>();
+        assert_eq!(ids(mem_rows(Some(&v), 0, 0, "")), ["3h", "ecole", "maman"]);
+        assert_eq!(ids(mem_rows(Some(&v), 0, 1, "")), ["maman", "3h", "ecole"]);
+        assert_eq!(ids(mem_rows(Some(&v), 0, 2, "")), ["3h", "ecole", "maman"]);
+        assert_eq!(ids(mem_rows(Some(&v), 1, 0, "")), ["3h"]);
+        assert_eq!(ids(mem_rows(Some(&v), 2, 0, "")), ["maman"]);
+        assert_eq!(ids(mem_rows(Some(&v), 6, 0, "")), ["3h", "ecole"]);
+        assert_eq!(ids(mem_rows(Some(&v), 7, 0, "")), ["ecole"]);
+        assert_eq!(ids(mem_rows(Some(&v), 0, 0, "eluard")), ["ecole"]);
+        assert_eq!(mem_reason(Some(&v), "3h"), "heure ou durée seule");
+        assert_eq!(mem_reason(Some(&v), "maman"), "");
     }
 }

@@ -47,8 +47,18 @@ def _ecrire(demandes: list[dict]):
     FICHIER.write_text(ENTETE + "\n" + corps, encoding="utf-8")
 
 
-def noter(question: str, reponse: str):
-    if not question or not IMPOSSIBLE.search(normaliser(reponse or "")):
+_derniere = {"question": "", "reponse": ""}      # dernier échange (pour « note-le dans ce que tu ne sais pas faire »)
+DEMANDE_DE_NOTER = re.compile(r"\b(?:note|ecris|mets|ajoute)(?: le| la| ca)?\b.*\b(?:(?:ne )?(?:sais|peux) pas faire|a ajouter"
+                              r"|a apprendre|fichier texte|liste)\b")
+
+
+def retenir_echange(question: str, reponse: str):
+    if question and not DEMANDE_DE_NOTER.search(normaliser(question)):
+        _derniere.update(question=question, reponse=reponse or "")
+
+
+def noter(question: str, reponse: str, force: bool = False):
+    if not question or not (force or IMPOSSIBLE.search(normaliser(reponse or ""))):
         return
     maintenant = datetime.now().strftime("%Y-%m-%d %H:%M")
     cle = normaliser(question)
@@ -90,7 +100,25 @@ def installer(ctx, reg):
         except Exception:  # noqa: BLE001
             pass
         reg.apres_echange(noter)
+        reg.apres_echange(retenir_echange)
+
+    def noter_a_ajouter(demande: str = ""):
+        """L'utilisateur (ou l'IA) demande de noter une chose que Jarvis ne sait pas encore faire."""
+        demande = (demande or "").strip() or _derniere["question"]
+        if not demande:
+            return Resultat("Dis-moi ce que je dois noter.", ok=False)
+        if not getattr(ctx, "simulation", False):
+            noter(demande, _derniere["reponse"] if demande == _derniere["question"] else "(noté à la demande)", force=True)
+        return Resultat(f"C'est noté dans la liste de ce que je dois apprendre : « {demande[:120]} ».")
+
     reg.outil("choses_a_ajouter", "Dit ce que Jarvis n'a pas su faire récemment (noté pour l'ajouter plus tard).",
               {}, [], choses_a_ajouter)
+    reg.outil("noter_a_ajouter", "Note dans a-ajouter.txt une demande que Jarvis ne sait pas encore faire, pour qu'elle "
+              "soit ajoutée plus tard. Sans demande : la dernière question de l'utilisateur.",
+              {"demande": "ce que l'utilisateur voulait faire (facultatif)"}, [], noter_a_ajouter)
+    reg.regle(r"^(?:ok |alors |vas y )?(?:note|ecris|mets|ajoute)(?: le| la| ca| moi ca| le moi)?"
+              r" (?:dans|sur) (?:ta |la |le |un |une )?(?:liste|fichier|truc|chose)?.*"
+              r"(?:(?:ne )?(?:sais|peux) pas (?:encore )?faire|a ajouter|a apprendre)$",
+              lambda m, t: [("noter_a_ajouter", {})], priorite=19)
     reg.regle(r"^(?:qu'est ce que|quelles sont les choses que|dis moi ce que) tu ne (?:sais|peux) pas (?:encore )?faire$",
               lambda m, t: [("choses_a_ajouter", {})], priorite=20)

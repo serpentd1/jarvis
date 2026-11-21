@@ -62,12 +62,14 @@ pub enum Sortie {
     Refus(String),
     /// Il faut un « oui » : (numéro de la question, question).
     Question(u64, String),
+    /// Des données pour l'IA (elle rédige la réponse) : (phrase de secours, données).
+    Donnees(String, String),
 }
 
 impl Sortie {
     pub fn texte(&self) -> &str {
         match self {
-            Sortie::Fait(t) | Sortie::Refus(t) | Sortie::Question(_, t) => t,
+            Sortie::Fait(t) | Sortie::Refus(t) | Sortie::Question(_, t) | Sortie::Donnees(t, _) => t,
         }
     }
     pub fn json(&self) -> Value {
@@ -75,6 +77,7 @@ impl Sortie {
             Sortie::Fait(t) => json!({"ok": true, "dire": t}),
             Sortie::Refus(t) => json!({"ok": false, "dire": t}),
             Sortie::Question(id, t) => json!({"ok": true, "dire": t, "confirmer": id}),
+            Sortie::Donnees(t, p) => json!({"ok": true, "dire": t, "pour_ia": p}),
         }
     }
 }
@@ -486,7 +489,7 @@ struct Outil {
 
 const CH: &str = "chemin : « bureau\\x.txt », « documents\\projet », « C:\\…\\x », ou juste un nom (dossier Documents\\Jarvis)";
 
-const OUTILS: [Outil; 35] = [
+const OUTILS: [Outil; 39] = [
     Outil { nom: "alarme_telephone", description: "Crée une alarme dans l'appli Horloge du TÉLÉPHONE (pas du PC).", params: &[("heure", "heure, ex. 07:30", true), ("nom", "nom de l'alarme", false)] },
     Outil { nom: "minuteur_telephone", description: "Lance un minuteur sur le TÉLÉPHONE (pas sur le PC).", params: &[("duree", "durée, ex. 5 minutes", true), ("nom", "nom du minuteur", false)] },
     Outil { nom: "sonner_telephone", description: "Fait sonner le TÉLÉPHONE à fond (même en silencieux), avec vibration et flash, pour le retrouver.", params: &[] },
@@ -499,6 +502,10 @@ const OUTILS: [Outil; 35] = [
     Outil { nom: "photo_telephone", description: "Ouvre l'appareil photo du téléphone.", params: &[] },
     Outil { nom: "repondre_telephone", description: "Envoie un message depuis le téléphone (réponse WhatsApp/SMS…) à quelqu'un, après confirmation.", params: &[("a", "nom de la personne", true), ("texte", "message à envoyer", true)] },
     Outil { nom: "appeler_telephone", description: "Appelle quelqu'un avec le téléphone : appel normal, ou appel vocal WhatsApp (appli = whatsapp). Toujours après confirmation.", params: &[("a", "nom ou numéro", true), ("appli", "telephone (par défaut) ou whatsapp", false)] },
+    Outil { nom: "whatsapp_lire", description: "Lit WhatsApp sur le PC : les dernières discussions (sans contact, avec les non lus) ou les derniers messages d'une personne.", params: &[("a", "contact (vide = les dernières discussions)", false)] },
+    Outil { nom: "whatsapp_envoyer", description: "Envoie un message WhatsApp depuis l'appli du PC. Toujours après confirmation (Jarvis relit le message).", params: &[("a", "nom du contact", true), ("texte", "le message à envoyer, mot pour mot", true)] },
+    Outil { nom: "changer_modele", description: "Change le modèle d'IA de Jarvis : le plus fort (550B), le rapide qui voit les images (120B), le très rapide (30B), celui de ce PC (LM Studio, gratuit) ou auto.", params: &[("choix", "fort, rapide images, tres rapide, local ou auto", true)] },
+    Outil { nom: "cours_pai", description: "Emploi du temps aménagé (PAI) : note qu'il ne va pas à un cours, ou qu'il y va finalement. Ex. « je ne vais pas en maths demain », « finalement je vais en SVT lundi ».", params: &[("jour", "aujourd'hui, demain, lundi… ou JJ/MM", true), ("matiere", "matière du cours ; vide = tous les cours du jour", false), ("heure", "heure du cours, ex. 14:00, si besoin", false), ("y_va", "oui s'il y va finalement, non s'il n'y va pas", true)] },
     Outil { nom: "appeler_whatsapp_pc", description: "Lance un appel vocal WHATSAPP depuis l'appli WhatsApp du PC (quand l'utilisateur dit « avec WhatsApp », « sur WhatsApp », « depuis WhatsApp »). Toujours après confirmation.", params: &[("a", "nom du contact ou numéro", true)] },
     Outil { nom: "message_vers_telephone", description: "Affiche une notification sur le téléphone (un rappel, un texte à garder).", params: &[("texte", "texte à afficher", true)] },
 
@@ -689,11 +696,19 @@ pub fn cible_whatsapp(a: &str) -> String {
 
 /// Lance le script : renvoie sa ligne de résultat (« CONTACT:… », « APPEL:… » ou « ERREUR:… »).
 fn whatsapp_pc(mode: &str, cible: &str, attendu: &str) -> String {
+    whatsapp_lignes(mode, cible, attendu, "")
+        .into_iter()
+        .find(|l| l.starts_with("CONTACT:") || l.starts_with("APPEL:") || l.starts_with("ERREUR:"))
+        .unwrap_or_else(|| "ERREUR:fenetre".into())
+}
+
+/// Lance le script et rend toutes ses lignes (DISC:…, MSG:…, CONTACT:…, ENVOYE:…, ERREUR:…).
+pub fn whatsapp_lignes(mode: &str, cible: &str, attendu: &str, texte: &str) -> Vec<String> {
     use std::os::windows::process::CommandExt;
     let chemin = std::env::temp_dir().join("jarvis-whatsapp.ps1");
     // avec la marque UTF-8 au début : sinon PowerShell lit mal les accents
     if std::fs::write(&chemin, format!("\u{FEFF}{WHATSAPP_PS}")).is_err() {
-        return "ERREUR:fenetre".into();
+        return vec!["ERREUR:fenetre".into()];
     }
     let sortie = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
@@ -701,15 +716,76 @@ fn whatsapp_pc(mode: &str, cible: &str, attendu: &str) -> String {
         .args(["-Mode", mode])
         .env("JARVIS_WA_CIBLE", cible)
         .env("JARVIS_WA_ATTENDU", attendu)
+        .env("JARVIS_WA_TEXTE", texte)
         .creation_flags(0x0800_0000) // sans fenêtre noire
         .output();
-    let Ok(sortie) = sortie else { return "ERREUR:fenetre".into() };
-    String::from_utf8_lossy(&sortie.stdout)
-        .lines()
-        .map(|l| l.trim().trim_start_matches('\u{FEFF}'))
-        .find(|l| l.starts_with("CONTACT:") || l.starts_with("APPEL:") || l.starts_with("ERREUR:"))
-        .unwrap_or("ERREUR:fenetre")
-        .to_string()
+    let Ok(sortie) = sortie else { return vec!["ERREUR:fenetre".into()] };
+    String::from_utf8_lossy(&sortie.stdout).lines().map(|l| l.trim().trim_start_matches('\u{FEFF}').to_string()).filter(|l| !l.is_empty()).collect()
+}
+
+/// Les codes de 4 à 8 chiffres sont masqués pour l'IA (sauf les années et les heures : « 2026 », « 18:42 »).
+fn masquer_codes(t: &str) -> String {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let r = R.get_or_init(|| regex::Regex::new(r"\b\d{4,8}\b").unwrap());
+    r.replace_all(t, |c: &regex::Captures| {
+        let m = c.get(0).map(|m| m.as_str()).unwrap_or("");
+        let annee = m.len() == 4 && (m.starts_with("19") || m.starts_with("20"));
+        if annee { m.to_string() } else { "(code masqué)".to_string() }
+    })
+    .to_string()
+}
+
+/// « Lis mes messages WhatsApp » / « qu'est-ce que Maman m'a écrit sur WhatsApp ».
+fn lire_whatsapp_pc(a: &str) -> Sortie {
+    let a = a.trim().to_string();
+    let (mode, cible) = if a.is_empty() { ("liste", "-".to_string()) } else { ("lire", cible_whatsapp(&a)) };
+    let l = whatsapp_lignes(mode, &cible, "", "");
+    if let Some(e) = l.iter().find(|x| x.starts_with("ERREUR:")) {
+        return Sortie::Refus(erreur_whatsapp(e, &a));
+    }
+    let contenu: Vec<String> = l.iter().filter_map(|x| x.strip_prefix("MSG:").or_else(|| x.strip_prefix("DISC:"))).map(masquer_codes).collect();
+    if contenu.is_empty() {
+        return Sortie::Refus(if a.is_empty() { "Je ne vois aucune discussion dans WhatsApp.".into() } else { format!("Je ne vois pas de message avec {a}.") });
+    }
+    let qui = l.iter().find_map(|x| x.strip_prefix("CONTACT:")).unwrap_or(&a).to_string();
+    journaliser("lire WhatsApp (PC)", if a.is_empty() { "discussions" } else { &qui }, true);
+    let donnees = if a.is_empty() {
+        format!("Dernières discussions WhatsApp (nom, heure, dernier message ; « non lus » s'il y en a) :\n{}", contenu.join("\n"))
+    } else {
+        format!("Derniers messages WhatsApp avec {qui}, du plus ancien au plus récent (« Vous » = l'utilisateur) :\n{}", contenu.join("\n"))
+    };
+    Sortie::Donnees("Voilà tes messages WhatsApp.".into(), donnees)
+}
+
+/// « Envoie à Lucas sur WhatsApp : j'arrive ». On ouvre la discussion pour avoir le VRAI nom, on relit le message
+/// dans la question, et il ne part qu'après le « oui ».
+fn envoyer_whatsapp_pc(a: &str, texte: &str) -> Sortie {
+    let (a, texte) = (a.trim().to_string(), texte.trim().to_string());
+    if a.is_empty() {
+        return Sortie::Refus("À qui veux-tu envoyer le message ?".into());
+    }
+    if texte.is_empty() {
+        return Sortie::Refus(format!("Qu'est-ce que je dois écrire à {a} ?"));
+    }
+    let cible = cible_whatsapp(&a);
+    let l = whatsapp_lignes("lire", &cible, "", "");
+    let Some(nom) = l.iter().find_map(|x| x.strip_prefix("CONTACT:")).map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) else {
+        let e = l.iter().find(|x| x.starts_with("ERREUR:")).cloned().unwrap_or_else(|| "ERREUR:introuvable".into());
+        return Sortie::Refus(erreur_whatsapp(&e, &a));
+    };
+    question(
+        format!("J'envoie à {nom} sur WhatsApp : « {texte} » ?"),
+        Box::new(move || {
+            let l = whatsapp_lignes("envoyer", &cible, &nom, &texte);
+            let ok = l.iter().any(|x| x.starts_with("ENVOYE:"));
+            journaliser("WhatsApp (PC)", &format!("message à {nom}"), ok);
+            if ok {
+                Sortie::Fait(format!("C'est envoyé à {nom}."))
+            } else {
+                Sortie::Refus(erreur_whatsapp(l.iter().find(|x| x.starts_with("ERREUR:")).map(String::as_str).unwrap_or("ERREUR:fenetre"), &nom))
+            }
+        }),
+    )
 }
 
 /// Ce que Jarvis dit quand le script échoue.
@@ -873,6 +949,27 @@ pub fn appeler(nom_outil: &str, args: &Value) -> Sortie {
         Value::Null => String::new(),
         v => v.to_string(),
     };
+    match nom_outil {
+        "whatsapp_lire" => return lire_whatsapp_pc(&texte_de("a")),
+        "whatsapp_envoyer" => return envoyer_whatsapp_pc(&texte_de("a"), &texte_de("texte")),
+        "changer_modele" => {
+            return match crate::cerveau::a_la_barre(crate::api::ApiReq::IaModele { choix: texte_de("choix") }) {
+                Some(v) if v["ok"].as_bool() == Some(true) => Sortie::Fait(v["dire"].as_str().unwrap_or("C'est fait.").into()),
+                Some(v) => Sortie::Refus(v["erreur"].as_str().unwrap_or("Désolé, ça n'a pas marché.").into()),
+                None => Sortie::Refus("Désolé, ça n'a pas marché.".into()),
+            };
+        }
+        "cours_pai" => {
+            let sauter = !texte_de("y_va").trim().to_lowercase().starts_with('o');
+            let req = crate::api::ApiReq::Pai { jour: texte_de("jour"), matiere: texte_de("matiere"), heure: texte_de("heure"), sauter };
+            return match crate::cerveau::a_la_barre(req) {
+                Some(v) if v["ok"].as_bool() == Some(true) => Sortie::Fait(v["dire"].as_str().unwrap_or("C'est noté.").into()),
+                Some(v) => Sortie::Refus(v["erreur"].as_str().unwrap_or("Désolé, ça n'a pas marché.").into()),
+                None => Sortie::Refus("Désolé, ça n'a pas marché.".into()),
+            };
+        }
+        _ => {}
+    }
     if nom_outil == "reessayer_appel" {
         let dernier = DERNIER_APPEL.lock().ok().and_then(|d| d.clone());
         return match dernier {
