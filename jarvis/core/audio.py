@@ -31,6 +31,7 @@ def trouver_micro(nom: str):
 class Micro:
     def __init__(self, nom_appareil: str = "", anti_echo=None):
         from .vad import Silero
+        self.nom_appareil = nom_appareil           # gardé pour le retrouver si la liste des appareils change
         self.appareil = trouver_micro(nom_appareil)
         self.anti_echo = anti_echo
         self.vad = Silero()
@@ -86,9 +87,8 @@ class Micro:
             self._dernier_recu = time.perf_counter()
             self.flux.start()
 
-    def rouvrir(self):
-        """Le flux du micro s'est arrêté ou ne reçoit plus rien : on le ferme et on le rouvre."""
-        log.warning("Le micro ne donne plus de son : je le rouvre.")
+    def fermer_flux(self):
+        """Ferme le flux du micro (sans le recréer)."""
         try:
             self.flux.abort()
         except Exception:  # noqa: BLE001
@@ -97,14 +97,24 @@ class Micro:
             self.flux.close()
         except Exception:  # noqa: BLE001
             pass
+
+    def rouvrir(self, demarrer: bool = True):
+        """Le flux du micro s'est arrêté ou ne reçoit plus rien (ou la liste des appareils a été relue) : on le
+        ferme et on le rouvre, en retrouvant le micro par son nom (son numéro a pu changer)."""
+        if demarrer:
+            log.warning("Le micro ne donne plus de son : je le rouvre.")
+        self.fermer_flux()
         self.vider()
         try:
+            if getattr(self, "nom_appareil", ""):
+                self.appareil = trouver_micro(self.nom_appareil)
             kw = dict(samplerate=self.freq_source, channels=1, dtype="int16", device=self.appareil, callback=self._recu)
             if self.freq_source == FREQ:
                 kw["blocksize"] = BLOC
             self.flux = sd.InputStream(**kw)
             self._dernier_recu = time.perf_counter()
-            self.flux.start()
+            if demarrer:
+                self.flux.start()
         except Exception:  # noqa: BLE001
             log.exception("Impossible de rouvrir le micro")
 
@@ -233,7 +243,12 @@ def son_ding(aigu: bool = False, volume: float = 0.22):
     return (son / 1.25 * volume).astype(np.float32), freq
 
 
-def ding(volume: float = 0.22, aigu: bool = False):
-    """Petit son « je t'écoute » (un peu plus haut quand Jarvis attend une réponse oui/non)."""
-    sd.play(*son_ding(aigu, volume))
-    sd.wait()
+def ding(volume: float = 0.22, aigu: bool = False, lecteur=None, nom_sortie: str = ""):
+    """Petit son « je t'écoute » (un peu plus haut quand Jarvis attend une réponse oui/non).
+    Il sort au même endroit que la voix de Jarvis : par son `lecteur` (l'anti-écho le connaît alors), sinon
+    sur la sortie `nom_sortie` (vide = celle de Windows)."""
+    if lecteur is not None:
+        lecteur.jouer(*son_ding(aigu, volume))
+        return
+    from .sortie import jouer_simple
+    jouer_simple(*son_ding(aigu, volume), nom_sortie)

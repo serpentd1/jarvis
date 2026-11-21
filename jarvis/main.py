@@ -49,6 +49,7 @@ class Jarvis:
         # déjà transcrite ; `dit_au_debut` = ce qu'il avait dit quand tu as commencé à parler.
         self.phrase_coupure, self.dit_au_debut = None, ""
         self.question_a_completer = None          # ta phrase, quand tu l'as coupé avant qu'il dise grand-chose
+        self.stop_entendu = False                 # « stop » pendant qu'il parlait : il se tait et la discussion finit
         self._verrou_stt = threading.Lock()
         self.ctx = types.SimpleNamespace(cfg=self.cfg, givre=self.givre, pont=self.pont, etat=self.etat,
                                          simulation=bool(args.test), appels=[])
@@ -85,7 +86,7 @@ class Jarvis:
             self.ctx.transcription_actuelle = lambda: self.stt.nom
         if avec_micro:
             from core.audio import Micro
-            from core.sortie import AntiEcho, Lecteur
+            from core.sortie import AntiEcho
             from core.wakeword import MotActivation
             anti_echo = None
             if not self.cfg.get("conversation", {}).get("mode_casque", False):
@@ -93,11 +94,19 @@ class Jarvis:
                     anti_echo = AntiEcho()
                 except Exception as e:  # noqa: BLE001
                     log.warning("Anti-écho indisponible (%s) : mets un casque, ou installe « livekit »", e)
-            self.lecteur = Lecteur(anti_echo)
+            self.lecteur = self._nouveau_lecteur(anti_echo)
             self.micro = Micro(self.cfg["micro"]["appareil"], anti_echo)
             if anti_echo is not None:
-                anti_echo.regler_delai(self.micro.flux.latency + self.lecteur.flux.latency)
+                # l'anti-écho compare le micro au son qui sort VRAIMENT de l'enceinte (retard Bluetooth compris)
+                self.lecteur.latence_micro = self.micro.flux.latency
+                self.lecteur.regler_anti_echo()
             self.mot = MotActivation(float(self.cfg["micro"]["seuil_activation"]))
+
+    def _nouveau_lecteur(self, anti_echo=None):
+        """Les haut-parleurs de Jarvis : `[voix] sortie` (ex. "JBL", vide = la sortie de Windows)."""
+        from core.sortie import Lecteur
+        return Lecteur(anti_echo, nom_sortie=str(self.cfg["voix"].get("sortie", "") or ""),
+                       delai_ms=self.cfg.get("conversation", {}).get("delai_sortie_ms", 0))
 
     def changer_voix(self, nom: str):
         """Change la voix (la télécharge si besoin) et la garde dans config.toml."""
@@ -231,7 +240,9 @@ class Jarvis:
                 self.etat.changer("parle", phrase)
                 interrompu = self.parler(phrase)
                 self.etat.changer("repos")
-                if interrompu and self.coupure:     # annonce coupée par ta voix
+                if interrompu and self.stop_entendu:
+                    pass                              # « stop » pendant l'annonce : il se tait, et c'est tout
+                elif interrompu and self.coupure:     # annonce coupée par ta voix
                     self._noter_coupure(phrase)
                     self.ecouter("coupe", self.coupure)
                 elif interrompu:
@@ -267,8 +278,8 @@ class Jarvis:
     def _un_echange(self, mode: str, avant=None):
         """Écoute une phrase, répond, et dit comment continuer (ou None pour revenir à « Hey Jarvis »)."""
         from core.audio import FREQ, ding
-        from core.cerveau import STOP, commande_autour_du_mot, enlever_mot_activation
-        from modules import normaliser
+        from core.cerveau import commande_autour_du_mot, enlever_mot_activation
+        from modules import est_stop
         m = self.cfg["micro"]
         conversation = float(m["conversation"])
         continuer = bool(m["conversation_continue"])
@@ -291,7 +302,7 @@ class Jarvis:
                 self.etat.changer("ecoute", "On discute… (dis « stop » pour finir)"
                                   if mode == "conversation" and continuer else "À toi, je t'écoute…")
                 if m["ding"] and not discussion:
-                    ding(aigu=mode == "question")
+                    ding(aigu=mode == "question", lecteur=self.lecteur)   # sur la sortie de Jarvis
                 audio = self.micro.enregistrer_commande(
                     float(m["silence_fin"]), float(m["duree_max"]), attente,
                     ignorer_debut=0.0 if discussion else 0.3, voix_min=0.35 if discussion else 0.24,
@@ -329,12 +340,15 @@ class Jarvis:
             return "conversation" if mode in ("conversation", "coupe") and (continuer or conversation > 0) else None
         a_completer, self.question_a_completer = self.question_a_completer, None
         log.info("Toi    : %s", texte)
-        if mode == "coupe" and STOP.match(normaliser(texte)):
-            # « stop », « tais-toi » juste après l'avoir coupé : il se tait, sans nouvelle réponse
+        if mode == "coupe" and est_stop(texte):
+            # « stop », « tais-toi » juste après l'avoir coupé : il se tait, sans nouvelle réponse, et la
+            # conversation s'arrête (il attend le prochain « Hey Jarvis »)
             log.info("Jarvis se tait")
+            self._fin_sans_rien_dire()
             self.etat.changer("repos")
-            return "conversation" if any(m_ in normaliser(texte) for m_ in ("tais", "chut")) else None
-        if discussion and STOP.match(normaliser(texte)):
+            return None
+        if discussion and est_stop(texte):
+            # un mot d'arrêt tout seul pendant la conversation : elle se termine, sans demander à l'IA
             log.info("Fin de la conversation")
             self.parler(self.cerveau.fin_conversation() or "D'accord, à plus tard !")
             self.etat.changer("repos")
@@ -385,6 +399,10 @@ class Jarvis:
         if interrompu:
             # il saura où il en était : ce qu'il a VRAIMENT dit, et ce qu'il n'a pas eu le temps de dire
             self._noter_coupure(" ".join(recues) or rep.texte)
+            if self.stop_entendu:                  # « stop » : il se tait et la conversation s'arrête
+                self.cerveau.pas_dit = ""          # pas de « pour finir ce que je disais… » la prochaine fois
+                self._fin_sans_rien_dire()
+                return None
             if self.coupure:                       # coupé par ta voix : il t'écoute tout de suite
                 if len(self.dit_au_debut) < 40:
                     self.question_a_completer = texte  # il n'avait presque rien dit : tu continuais sans doute
@@ -394,6 +412,16 @@ class Jarvis:
         if rep.suivi:
             return "question"
         return "conversation" if continuer or conversation > 0 else None
+
+    def _fin_sans_rien_dire(self):
+        """La conversation finit sur un « stop » : les modules ferment ce qui était en cours (une révision…),
+        mais Jarvis ne dit rien (on lui a demandé de se taire)."""
+        try:
+            bilan = self.cerveau.fin_conversation()
+            if bilan:
+                log.info("Fin de la conversation (pas dit, on m'a demandé de me taire) : %s", bilan)
+        except Exception:  # noqa: BLE001
+            log.exception("fin de conversation")
 
     def _noter_coupure(self, complet: str):
         """Dit au cerveau où il a été coupé : ce qu'il a dit, et ce qu'il lui restait à dire (pour un mini-résumé
@@ -478,18 +506,21 @@ class Jarvis:
     def parler(self, texte, mesure: dict | None = None) -> bool:
         """Dit la réponse phrase par phrase, dès que chaque morceau de voix est prêt (Jarvis parle pendant que
         l'IA écrit encore). `texte` : la réponse entière, ou des phrases qui arrivent au fur et à mesure.
-        Le micro reste ouvert : « Hey Jarvis » le coupe net. Ta voix (0,3 s) ne le coupe PAS net : il finit
-        d'écouter ta phrase en continuant de parler, puis se tait ; ta phrase transcrite est dans
-        `self.phrase_coupure`. Renvoie True s'il a été coupé ; ce qu'il a vraiment dit est dans
-        `self.dit_avant_coupure`."""
+        Le micro reste ouvert : « Hey Jarvis » le coupe net.
+        - Avec un casque (`mode_casque`) : ta voix (0,3 s) ne le coupe PAS net : il finit d'écouter ta phrase en
+          continuant de parler, puis se tait ; ta phrase transcrite est dans `self.phrase_coupure`.
+        - Sans casque (enceinte) : sa propre voix revient dans le micro. Seul un mot d'arrêt (« stop »,
+          « tais-toi »…) le coupe : le petit bout de voix entendu est transcrit, et le reste est ignoré.
+        Un mot d'arrêt le fait taire tout de suite et met `self.stop_entendu` (la conversation s'arrête).
+        Renvoie True s'il a été coupé ; ce qu'il a vraiment dit est dans `self.dit_avant_coupure`."""
         from collections import deque
 
-        import numpy as np
         from core.audio import BLOC, FREQ, niveau
-        from core.sortie import Lecteur
+        from modules import est_stop
         if self.lecteur is None:
-            self.lecteur = Lecteur()
+            self.lecteur = self._nouveau_lecteur()
         lecteur, voix = self.lecteur, self.voix
+        lecteur.verifier_sortie(self.micro)        # l'enceinte voulue est-elle (de nouveau) là ?
         en_direct = not isinstance(texte, str)
         blocs = texte if en_direct else [texte]
         arret, fini = threading.Event(), threading.Event()
@@ -518,16 +549,20 @@ class Jarvis:
         m, conv = self.cfg["micro"], self.cfg.get("conversation", {})
         ecoute = bool(self.micro and self.micro.flux.active and m["interrompre"])
         couper = ecoute and bool(m.get("couper_en_parlant", True))
+        casque = bool(conv.get("mode_casque", False))
         duree_min = float(conv.get("couper_apres", 0.3))
+        if not casque:
+            duree_min = min(duree_min, 0.24)     # « stop » est un mot court ; la transcription vérifie ensuite
         seuil_pendant = float(conv.get("seuil_voix_pendant", 0.85))   # plus exigeant quand il parle (écho)
         volume = float(m["volume_conversation"])
         fin_silence = max(float(m["silence_fin"]), 0.7)               # fin de ta phrase, quand tu parles par-dessus
         duree_max = float(m["duree_max"])
         recents, duree_bloc = deque(maxlen=int(2.5 * FREQ / BLOC)), BLOC / FREQ
         self.coupure, interrompu, affichee, voix_entendue = None, False, None, 0.0
-        self.phrase_coupure, self.dit_au_debut = None, ""
-        # Tu lui parles par-dessus : il NE s'arrête PAS net. Il finit d'écouter ta phrase en continuant de parler,
-        # la transcrit, et seulement alors il se tait (s'il n'y avait que du bruit, il continue comme si de rien).
+        self.phrase_coupure, self.dit_au_debut, self.stop_entendu = None, "", False
+        # Avec un casque : tu lui parles par-dessus, il NE s'arrête PAS net. Il finit d'écouter ta phrase en
+        # continuant de parler, la transcrit, et seulement alors il se tait (un bruit : il continue comme si de rien).
+        # Sans casque : il n'écoute qu'un petit bout (moins de 2 s) et ne se tait que si c'est un mot d'arrêt.
         par_dessus, ta_phrase, silence, parole = False, [], 0.0, 0.0
         if couper:
             self.micro.vad.reinitialiser()
@@ -559,7 +594,11 @@ class Jarvis:
                     est_voix = p >= (seuil_pendant if joue else 0.6) and n >= (volume * 1.2 if joue else volume)
                     voix_entendue = voix_entendue + duree_bloc if est_voix else max(0.0, voix_entendue - duree_bloc)
                     if voix_entendue >= duree_min - 1e-6:
-                        par_dessus, ta_phrase, silence, parole = True, list(recents), 0.0, voix_entendue
+                        par_dessus, silence, parole = True, 0.0, voix_entendue
+                        if not casque:
+                            ta_phrase = list(recents)[-8:]   # juste avant ta voix (0,6 s), pas tout l'historique
+                            continue
+                        ta_phrase = list(recents)
                         self.dit_au_debut = lecteur.dit()
                         log.info("Tu me parles par-dessus : je finis ma phrase et je t'écoute")
                         self.etat.changer("parle_ecoute" if parle_encore else "parole")
@@ -569,15 +608,29 @@ class Jarvis:
                 parole += duree_bloc
                 fort = p >= (0.5 if joue else 0.35) and n >= (volume if joue else volume * 0.5)
                 silence = 0.0 if fort else silence + duree_bloc
+                if not casque:
+                    # un mot d'arrêt est court : 0,45 s de silence le termine, et on n'écoute jamais plus de 2 s
+                    if silence < 0.45 and len(ta_phrase) * duree_bloc < 2.0:
+                        continue
+                    texte = self._transcrire_bout(ta_phrase)
+                    if est_stop(texte) and not self._sa_propre_voix(texte, lecteur):
+                        interrompu, self.stop_entendu = True, True
+                        log.info("« %s » pendant que je parlais : je me tais", texte)
+                        break
+                    if texte:
+                        log.info("Entendu pendant que je parlais (pas un mot d'arrêt, j'ignore) : %s", texte)
+                    par_dessus, voix_entendue = False, 0.0
+                    recents.clear()
+                    continue
                 if not parle_encore and self.etat.etat == "parle_ecoute":
                     self.etat.changer("parole")                  # il a fini de parler, il t'écoute encore
                 if silence < fin_silence and parole < duree_max:
                     continue
-                texte = ""
-                try:
-                    texte = self.stt.transcrire(np.concatenate(ta_phrase).astype(np.float32) / 32768.0).strip()
-                except Exception:  # noqa: BLE001
-                    log.exception("transcription pendant qu'il parle")
+                texte = self._transcrire_bout(ta_phrase)
+                if texte and est_stop(texte):
+                    interrompu, self.stop_entendu = True, True
+                    log.info("« %s » pendant que je parlais : je me tais", texte)
+                    break
                 if texte:
                     interrompu, self.coupure, self.phrase_coupure = True, ta_phrase, texte
                     log.info("Ta phrase, entendue pendant que je parlais : %s", texte)
@@ -601,6 +654,23 @@ class Jarvis:
             self.mot.reinitialiser()
         return interrompu
 
+    def _transcrire_bout(self, blocs) -> str:
+        """Transcrit ce que tu as dit pendant qu'il parlait (avec le modèle déjà chargé)."""
+        import numpy as np
+        try:
+            return self.stt.transcrire(np.concatenate(blocs).astype(np.float32) / 32768.0).strip()
+        except Exception:  # noqa: BLE001
+            log.exception("transcription pendant qu'il parle")
+            return ""
+
+    @staticmethod
+    def _sa_propre_voix(entendu: str, lecteur) -> bool:
+        """Le mot d'arrêt entendu est dans la phrase que Jarvis est en train de dire (« c'est bon, j'ai… ») :
+        c'est sans doute l'écho de sa voix dans l'enceinte, pas toi."""
+        from modules import normaliser
+        n = normaliser(entendu)
+        return bool(n) and any(f" {n} " in f" {normaliser(t)} " for t in lecteur.textes_recents())
+
     # ── mode texte ───────────────────────────────────────────
     def texte(self) -> int:
         self.charger_cerveau()
@@ -609,7 +679,7 @@ class Jarvis:
         while (texte := input("> ").strip()):
             rep = self.cerveau.repondre(texte, "texte")
             print(f"Jarvis : {rep.texte}")
-            self.voix.dire(rep.texte)
+            self.voix.dire(rep.texte, str(self.cfg["voix"].get("sortie", "") or ""))
         return 0
 
     # ── mode test ────────────────────────────────────────────

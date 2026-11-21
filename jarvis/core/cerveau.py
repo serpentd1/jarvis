@@ -20,7 +20,7 @@ from datetime import datetime
 
 import requests
 
-from modules import normaliser
+from modules import ARRET, normaliser
 from . import config, ollama
 
 log = logging.getLogger("cerveau")
@@ -37,10 +37,9 @@ OUI = re.compile(r"^(oui|ouais|ouai|wesh|vas y|ok|okay|d'accord|daccord|envoie|e
 NON = re.compile(r"^(non|nan|nope|annule|laisse tomber|oublie|stop|pas maintenant|attends|surtout pas|n'envoie pas|"
                  r"non merci|pas du tout|arrete|change)\b")
 # L'IA dit avoir agi… sans avoir appelé d'outil : on ne la laisse pas mentir.
-# « Stop » pendant une conversation continue : on arrête de discuter (texte normalisé).
-STOP = re.compile(r"^(?:(?:hey |ok )?jarvis )?(?:stop|arrete(?: toi)?|tais toi|chut|c'est bon|c'est tout|ca suffit|"
-                  r"au revoir|bonne nuit|a plus(?: tard)?|fin de la conversation|on arrete|merci c'est tout)"
-                  r"(?: (?:jarvis|merci))*$")
+# « Stop » pendant une conversation continue : on arrête de discuter (texte normalisé). La liste des mots
+# d'arrêt est dans modules/__init__.py (ARRET, est_stop).
+STOP = ARRET
 PRETEND_AGIR = re.compile(r"\b(j'ai (bien )?(envoye|lance|ouvert|ferme|mis|regle|active|desactive|coupe|change|cree|"
                           r"programme|supprime|annule|demarre|transmis)|c'est (bien )?(envoye|fait|lance|ouvert|regle|"
                           r"parti|programme)|message (bien )?envoye|je (l')?envoie|j'envoie|j'ouvre|je lance|je ferme|"

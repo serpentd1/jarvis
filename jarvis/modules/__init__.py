@@ -155,6 +155,23 @@ def normaliser(texte: str) -> str:
     return re.sub(r"\s+", " ", texte).strip()
 
 
+# Mots d'arrêt : ils font taire Jarvis pendant qu'il parle, et finissent la conversation (texte normalisé).
+_ARRET = (r"(?:stop(?:pe|pez|per)?|arrete[sz]?(?: (?:toi|vous|ca|tout|de parler))?|tais toi|taisez vous|tait toi|"
+          r"ch+u+t+|ca suffit|c'est bon|c'est tout|c'est fini|ca ira|silence|ferme la|laisse tomber|"
+          r"on arrete(?: la)?|au revoir|bonne nuit|a plus(?: tard)?|fin de la conversation)")
+# … avec, autour, seulement ces petits mots-là (« ok stop », « merci c'est tout », « Jarvis, tais-toi »)
+_AUTOUR = (r"(?:hey|he|eh|oh|ah|ok|okay|bon|ben|bah|allez|non|jarvis|merci|beaucoup|maintenant|s'il te plait|"
+           r"s'il vous plait|stp|svp|tout de suite)")
+ARRET = re.compile(rf"^(?:{_AUTOUR} )*{_ARRET}(?: (?:{_ARRET}|{_AUTOUR}))*$")
+
+
+def est_stop(texte: str) -> bool:
+    """« Stop », « tais-toi », « merci c'est tout »… : un mot d'arrêt tout seul. « Arrête la musique » ou
+    « c'est bon pour demain ? » sont de vraies demandes : ce n'est pas un stop."""
+    n = re.sub(r"\bc est\b", "c'est", normaliser(texte or ""))
+    return bool(n and ARRET.match(n))
+
+
 # Codes de vérification : 4 à 8 chiffres d'affilée (« 482913 », « G-1234 ») ou « 123 456 ».
 # Les numéros de téléphone (10 chiffres, ou groupés par 2) et les heures ne sont pas touchés.
 CODES = re.compile(r"(?<!\d)(?:\d{4,8}|\d{3}[ -]\d{3})(?!\d)")

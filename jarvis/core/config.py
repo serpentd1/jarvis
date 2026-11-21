@@ -16,9 +16,11 @@ DEFAUTS = {
               "volume_conversation": 350, "ding": True, "interrompre": True, "couper_en_parlant": True},
     "transcription": {"modele": "large-v3-turbo", "appareil": "auto", "precision": "int8_float16",
                       "mots": "Jarvis, Pronote"},
-    "voix": {"voix": "denise", "modele": "", "lenteur": 1.0, "volume": 1.0},
+    # sortie : le haut-parleur de Jarvis seulement (un morceau de son nom, ex. "JBL" ; vide = sortie de Windows)
+    "voix": {"voix": "denise", "modele": "", "lenteur": 1.0, "volume": 1.0, "sortie": ""},
+    # delai_sortie_ms : retard de l'enceinte pour l'anti-écho (0 = automatique : 200 ms en Bluetooth, sinon 0)
     "conversation": {"modele": "nvidia/nemotron-3.5-super-vl-120b-a12b", "mode_casque": False, "couper_apres": 0.3,
-                     "seuil_voix_pendant": 0.85, "journal_latence": True,
+                     "seuil_voix_pendant": 0.85, "delai_sortie_ms": 0, "journal_latence": True,
                      "enregistrer_derniere_phrase": False},
     # L'IA se choisit maintenant dans les réglages de la barre (clic droit, Paramètres, IA) : LM Studio sur le PC
     # d'abord (gratuit), ou une clé d'API gratuite ou payante. ollama_url et modele ne servent plus qu'au

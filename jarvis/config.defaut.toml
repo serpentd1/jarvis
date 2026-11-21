@@ -13,7 +13,8 @@ givre_exe = ""
 givre_arguments = ""
 
 [micro]
-# Vide = micro par défaut de Windows. Sinon, un morceau de son nom (ex : "Razer").
+# Vide = micro par défaut de Windows. Sinon, un morceau de son nom (ex : "WO Mic" pour un téléphone
+# avec l'appli WO Mic, ou "Razer").
 appareil = ""
 # Sensibilité du « Hey Jarvis » : 0.3 = réagit facilement, 0.8 = très strict.
 seuil_activation = 0.5
@@ -38,8 +39,9 @@ volume_conversation = 350
 ding = true
 # Dire « Hey Jarvis » pendant qu'il parle le coupe.
 interrompre = true
-# Couper Jarvis en lui parlant (2 ou 3 mots suffisent), sans dire « Hey Jarvis ». Mets false s'il se coupe
-# tout seul à cause du son de ses haut-parleurs (avec un casque, ça marche le mieux).
+# Couper Jarvis en lui parlant, sans dire « Hey Jarvis ». Avec un casque (mode_casque = true), 2 ou 3 mots
+# suffisent. Sans casque (enceinte), seuls les mots d'arrêt le coupent : « stop », « arrête », « tais-toi »,
+# « c'est bon », « ça suffit », « chut », « merci c'est tout »… et la conversation s'arrête.
 couper_en_parlant = true
 
 [transcription]
@@ -66,6 +68,10 @@ voix = "denise"
 # 1.0 = normal, 0.8 = plus rapide, 1.2 = plus lent.
 lenteur = 1.0
 volume = 1.0
+# Où Jarvis parle : un morceau du nom du haut-parleur (ex : "JBL" pour l'enceinte Bluetooth). Seul Jarvis
+# y parle (voix, « ding », annonces) : le reste du PC garde la sortie de Windows. Vide = la sortie de Windows.
+# Si l'enceinte est éteinte, Jarvis parle sur la sortie de Windows et la cherche encore à la phrase suivante.
+sortie = ""
 
 [cerveau]
 # L'IA se choisit dans les réglages de la barre (clic droit sur la barre, Paramètres, IA) :
@@ -105,6 +111,11 @@ couper_apres = 0.3
 # Pendant qu'il parle, le détecteur de voix est plus exigeant (0 à 1) pour ne pas réagir à son propre écho.
 # Monte-le (0.9) s'il se coupe tout seul, baisse-le (0.7) s'il a du mal à t'entendre.
 seuil_voix_pendant = 0.85
+# Retard (millisecondes) entre le son envoyé par le PC et le son qui sort vraiment de l'enceinte, pour que
+# l'anti-écho retire bien la voix de Jarvis du micro. 0 = automatique : 200 ms pour une enceinte Bluetooth
+# (JBL, Bose, Sony…), 0 pour une sortie avec un fil. Un micro de téléphone (WO Mic) ajoute son propre retard :
+# s'il se coupe tout seul sur sa voix, essaie 250, 300 ou 400.
+delai_sortie_ms = 0
 # Écrire dans le journal le temps de chaque étape (fin de ta phrase -> début de sa voix).
 journal_latence = true
 # Garder ta dernière phrase en fichier son (%APPDATA%\Jarvis\donnees\derniere-phrase-*.wav), pour

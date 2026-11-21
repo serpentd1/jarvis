@@ -195,8 +195,13 @@ class Voix:
             return np.zeros(1, dtype=np.float32), frequence
         return np.concatenate(morceaux).astype(np.float32), frequence
 
-    def dire(self, texte: str):
+    def dire(self, texte: str, nom_sortie: str = ""):
+        """Dit la phrase d'un coup (mode texte), sur la sortie de Jarvis (`[voix] sortie`, vide = Windows)."""
         audio, frequence = self.synthetiser(texte)
+        if nom_sortie:
+            from .sortie import jouer_simple
+            jouer_simple(audio, frequence, nom_sortie)
+            return
         sd.play(audio, frequence)
         sd.wait()
 
