@@ -740,6 +740,15 @@ pub fn son(s: Son, volume: f32) {
     }
 }
 
+/// Une touche multimédia (0xB3 = lecture / pause), comme sur un clavier.
+pub fn touche_media(vk: u8) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP};
+    unsafe {
+        keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY, 0);
+        keybd_event(vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
+    }
+}
+
 pub fn soft_sound(kind: usize) {
     use std::sync::OnceLock;
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};

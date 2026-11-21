@@ -39,7 +39,16 @@ def installer(ctx, reg):
 
     if not getattr(ctx, "simulation", False):
         reg.apres_echange(noter)
+    def repeter():
+        """« Répète » : redit la dernière réponse, sans redemander à l'IA."""
+        echanges = base.donnees.get("echanges", [])
+        derniere = next((e["reponse"] for e in reversed(echanges) if e.get("reponse")), "")
+        return Resultat(derniere or "Je n'ai encore rien dit.")
+
     reg.api("historique", api)
+    reg.outil("repeter", "Redit la dernière réponse de Jarvis mot pour mot (« répète », « tu peux répéter ? »).", {}, [], repeter)
+    reg.regle(r"^(?:repete|repete ca|tu peux repeter|peux tu repeter|redis(?: le| moi ca| ca)?|qu'est ce que tu as dit|"
+              r"t'as dit quoi|tu as dit quoi)(?: jarvis| s'il te plait| stp| svp)?$", lambda m, t: [("repeter", {})], priorite=19)
     reg.outil("ouvrir_historique", "Ouvre l'historique des conversations avec Jarvis dans la grande île.", {}, [],
               ouvrir_historique)
     reg.regle(r"^(?:ouvre|affiche|montre)(?: moi)? (?:l'|l |mon |notre |ton )?historique(?: des| de nos| de mes)?"

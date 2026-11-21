@@ -877,6 +877,21 @@ def installer(ctx, reg):
         stats["oublies"], stats["fusionnes"] = effacer(d, list(fusions) + oublier, fusions, sauvegarde=False)
         return stats
 
+    def vider_memoire():
+        with base as d:
+            n = len(d["noeuds"]) - 1
+
+        def oui():
+            with base as d:
+                sauvegarder_tout(d)
+                d["noeuds"] = [x for x in d["noeuds"] if x["id"] == "moi"]
+                d["liens"] = []
+            return Resultat("C'est fait, ma mémoire est vide. Si tu changes d'avis, dis « annule le rangement ».")
+        if n <= 0:
+            return Resultat("Ma mémoire est déjà vide.")
+        return Resultat(f"Tu veux vraiment que j'oublie tout ce que je sais sur toi ({n} souvenirs) ? Tu pourras annuler.",
+                        confirmer=oui, annuler="D'accord, je garde tout.")
+
     def ranger_memoire():
         """« Range » : tout est réorganisé (bruit, doublons, puis l'IA classe, fusionne et renomme).
         Une photo est prise avant : « annule le rangement » remet tout comme avant."""
@@ -1006,6 +1021,11 @@ def installer(ctx, reg):
     reg.outil("ranger_memoire", "Range / trie / réorganise toute la mémoire (« range ») : enlève le bruit et les "
               "doublons, puis classe chaque souvenir dans le bon dossier, fusionne et renomme. On peut annuler.", {}, [],
               ranger_memoire)
+    reg.outil("vider_memoire", "Oublie TOUTE la mémoire (tous les souvenirs), après un « oui » ; on peut annuler.", {}, [],
+              vider_memoire)
+    reg.regle(r"^(?:supprime|efface|vide|oublie|reinitialise)(?: moi)? (?:toute? (?:ta|la|ma) memoire|tout ce que tu sais"
+              r"(?: sur moi)?|tous (?:tes|les|mes) souvenirs|toute? ta memoire interne)$",
+              lambda m, t: [("vider_memoire", {})], priorite=20)
     reg.outil("annuler_nettoyage_memoire", "Annule le dernier nettoyage ou oubli de la mémoire (remet les souvenirs).",
               {}, [], annuler_rangement)
     reg.regle(r"^(?:range|ranges|trie|tries|nettoie|nettoies|organise|reorganise|classe|fais le menage dans|"

@@ -4036,6 +4036,12 @@ unsafe extern "system" fn widget_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             with_app(|a| a.open_settings());
             return 0;
         }
+        0x0208 => {
+            // WM_MBUTTONUP : clic du milieu sur l'île = pause ou reprise de la musique (idée 30)
+            sys::touche_media(0xB3);
+            with_app(|a| a.bruit(sys::Son::Clic));
+            return 0;
+        }
         WM_RBUTTONUP | WM_NCRBUTTONUP => {
             show_menu();
             return 0;
