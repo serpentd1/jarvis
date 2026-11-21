@@ -1,5 +1,6 @@
 """Petites commandes du PC : heure, date, verrouiller, couper le micro, éteindre Jarvis."""
 import ctypes
+import threading
 from datetime import datetime
 
 from . import Resultat
@@ -45,5 +46,26 @@ def installer(ctx, reg):
     reg.regle(r"^(?:verrouille|bloque)(?: l'ordinateur| le pc| l'ordi| mon pc| la session)$",
               lambda m, t: [("verrouiller_pc", {})], priorite=5)
     reg.regle(r"^(?:coupe|desactive|eteins) (?:ton|le) micro$", lambda m, t: [("couper_micro", {})], priorite=5)
-    reg.regle(r"^(?:eteins toi|desactive toi|arrete toi|quitte|va te coucher|au revoir jarvis)$",
-              lambda m, t: [("eteindre_jarvis", {})], priorite=5)
+    reg.regle(r"^(?:(?:non|bon|ok|alors|allez) )?(?:eteins toi|desactive toi|arrete toi|quitte|va te coucher|"
+              r"au revoir jarvis)(?: jarvis)?$", lambda m, t: [("eteindre_jarvis", {})], priorite=5)
+
+    def pause_ecoute(minutes: int = 10):
+        """« Mets-toi en pause » : il n'écoute plus « Hey Jarvis » pendant quelques minutes, puis revient tout seul."""
+        try:
+            n = max(1, min(240, int(minutes)))
+        except (TypeError, ValueError):
+            n = 10
+        ctx.etat.micro = False
+
+        def reprendre():
+            ctx.etat.micro = True
+        t = threading.Timer(n * 60, reprendre)
+        t.daemon = True
+        t.start()
+        return Resultat(f"Je me mets en pause {n} minute{'s' if n > 1 else ''}. Je réécoute ensuite tout seul.")
+
+    reg.outil("pause_ecoute", "Met Jarvis en pause : il n'écoute plus « Hey Jarvis » pendant N minutes (10 par défaut).",
+              {"minutes": {"type": "integer", "description": "durée de la pause en minutes"}}, [], pause_ecoute)
+    reg.regle(r"^(?:(?:non|bon|ok|alors) )?(?:mets toi en pause|fais une pause|arrete d'ecouter|arrete d ecouter|"
+              r"n'ecoute plus|n ecoute plus|ecoute plus)(?: jarvis)?(?: (?:pendant|pour) (?P<n>\d+) minutes?)?$",
+              lambda m, t: [("pause_ecoute", {"minutes": int(m["n"]) if m["n"] else 10})], priorite=5)

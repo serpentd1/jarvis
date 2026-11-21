@@ -21,6 +21,15 @@ public class JarvisWa {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
+  public static int Distance(string a, string b) {
+    var d = new int[a.Length + 1, b.Length + 1];
+    for (int i = 0; i <= a.Length; i++) d[i, 0] = i;
+    for (int j = 0; j <= b.Length; j++) d[0, j] = j;
+    for (int i = 1; i <= a.Length; i++)
+      for (int j = 1; j <= b.Length; j++)
+        d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+    return d[a.Length, b.Length];
+  }
   public static IntPtr Trouver(string classe) {
     IntPtr r = IntPtr.Zero;
     EnumWindows((h, x) => {
@@ -94,7 +103,26 @@ function Entete {   # « Infos du contact Maman » -> Maman (la discussion ouver
   return $null
 }
 function BoutonAppel { Tous | Where-Object { (Genre $_) -eq 'Button' -and $_.Current.Name -match '^(Appel vocal|Voice call)$' } | Select-Object -First 1 }
-function Simple($t) { ("$t".Normalize([Text.NormalizationForm]::FormD) -replace '\p{Mn}', '').ToLower() -replace '[^a-z0-9+]', '' }
+# FormKC : les lettres décorées (𝓛𝓾𝓬𝓪𝓼, ＬＵＣＡＳ) redeviennent des lettres normales ; on enlève accents, emojis, symboles
+function Mots($t) { (("$t".Normalize([Text.NormalizationForm]::FormKC).Normalize([Text.NormalizationForm]::FormD) -replace '\p{Mn}', '').ToLower() -replace '[^a-z0-9+ ]', ' ' -replace '\s+', ' ').Trim() }
+function Simple($t) { (Mots $t) -replace ' ', '' }
+function Distance([string]$a, [string]$b) { return [JarvisWa]::Distance($a, $b) }   # lettres à changer pour passer de a à b
+function Ressemblance($dit, $nom) {   # 0 à 100 : « mamann » ~ « Maman 💕 », « lucas » ~ « 𝓛𝓾𝓬𝓪𝓼 🔥 »
+  $a = Mots $dit; $b = Mots $nom
+  if (-not $a -or -not $b) { return 0 }
+  if ($a -eq $b) { return 100 }
+  if ($b.StartsWith("$a ") -or (" $b ").Contains(" $a ")) { return 88 }
+  $sa = $a -replace ' ', ''; $meilleur = 0.0
+  foreach ($w in @(($b -replace ' ', '')) + $b.Split(' ')) {
+    if ($w.Length -lt 2) { continue }
+    $r = 1 - (Distance $sa $w) / [Math]::Max($sa.Length, $w.Length)
+    if ($r -gt $meilleur) { $meilleur = $r }
+  }
+  return [int](100 * $meilleur)
+}
+function NomDeLigne($t) {   # « Maman 💕 18:42 » -> « Maman 💕 » (le titre d'une discussion, sans son heure)
+  return ("$t" -replace '\s+(\d{1,2}:\d{2}|\d{1,2}/\d{1,2}/\d{2,4}|hier|aujourd.hui|yesterday|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s*$', '').Trim()
+}
 
 function Devant-Ok { return [JarvisWa]::EstDevant($main, $web) }
 function ClavierDans($x) {   # WhatsApp est la fenetre active ET le clavier est EXACTEMENT dans cet element
@@ -120,7 +148,27 @@ function Cliquer($x) {   # comme un clic de souris, sans jamais passer par la to
   return $false
 }
 
+function OuvrirDepuisListe {
+  # Sans rien taper : le titre de discussion qui ressemble le plus à ce qui a été dit, dans la colonne de gauche
+  $titres = Tous | Where-Object { (Genre $_) -eq 'DataItem' -and $_.Current.Name -and $_.Current.BoundingRectangle.Height -gt 0 -and $_.Current.BoundingRectangle.Height -lt 45 }
+  $choisi = $null; $nomChoisi = ''; $note = 0
+  foreach ($x in $titres) {
+    $nom = NomDeLigne $x.Current.Name
+    $s = Ressemblance $cible $nom
+    if ($s -gt $note) { $note = $s; $choisi = $x; $nomChoisi = $nom }
+  }
+  if ($note -lt 72) { return $null }
+  if (-not (Devant-Ok)) { try { Start-Process 'whatsapp:' } catch { }; Start-Sleep -Milliseconds 900 }
+  if (-not (Devant-Ok)) { return $null }   # jamais de clic si WhatsApp n'est pas devant
+  $r = $choisi.Current.BoundingRectangle
+  [JarvisWa]::Clic([int]($r.Left + $r.Width / 2), [int]($r.Top + $r.Height / 2))
+  $voulu = Simple $nomChoisi
+  return (Attendre { $e = Entete; if ($e -and ((Simple $e) -eq $voulu -or $voulu.Contains((Simple $e)) -or (Simple $e).Contains($voulu))) { $e } } 4000)
+}
+
 function Ouvrir {
+  $nom = OuvrirDepuisListe
+  if ($nom) { return $nom }
   # on repart d'une recherche vide (le champ ne se montre plus quand il contient deja du texte)
   $vider = Tous | Where-Object { (Genre $_) -eq 'Button' -and $_.Current.Name -match '^(End icon button|Annuler la recherche|Cancel search)$' } | Select-Object -First 1
   if ($vider) { [void](Cliquer $vider); Start-Sleep -Milliseconds 600 }
