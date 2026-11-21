@@ -103,13 +103,14 @@ def page_obscura(url: str) -> str:
 
 
 def lire_en_fond(url: str) -> str:
-    """Une page lue sans bloquer l'écran : une simple requête d'abord, Obscura si la page a besoin de JavaScript."""
-    try:
-        t = texte_de_page(url)
-    except Exception:  # noqa: BLE001
-        t = ""
+    """Une page lue en arrière-plan, sans rien ouvrir à l'écran : par Obscura (le navigateur des agents, qui fait
+    tourner le JavaScript), et par une simple requête si Obscura n'est pas là ou ne trouve rien."""
+    t = page_obscura(url)
     if len(t) < 400:
-        t2 = page_obscura(url)
+        try:
+            t2 = texte_de_page(url)
+        except Exception:  # noqa: BLE001
+            t2 = ""
         t = t2 if len(t2) > len(t) else t
     return t
 
