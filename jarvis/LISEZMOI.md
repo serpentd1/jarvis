@@ -63,7 +63,18 @@ Jarvis est **une seule appli** : la voix, l'île en haut de l'écran et les widg
 - **Widgets du bureau** : les afficher ou non, modifier / verrouiller la disposition, actualiser.
 - **Paramètres…** (clic gauche aussi), **Réglages de la voix (config.toml)**, **Journal de Jarvis**.
 - **Lancer au démarrage de Windows** : une seule entrée « Jarvis » (elle remplace les anciennes « JarvisBarre » et « Givre »).
-- **Redémarrer Jarvis** (après avoir changé un réglage : l'île reste ouverte), **Quitter Jarvis** (tout s'arrête : voix, île, widgets).
+- **Redémarrer Jarvis** (après avoir changé un réglage : l'île reste ouverte), **Quitter Jarvis** (tout s'arrête : voix, île, et LM Studio avec son modèle, qui prend plusieurs Go).
+- **Couper la voix (libère la mémoire)** : la voix (« Hey Jarvis », Whisper, la parole) s'arrête, la barre et le chat écrit restent. **Allumer la voix** la relance. Dans la grande île › Paramètres › Jarvis et voix : « Allumer la voix au démarrage du PC » (décoché = seulement la barre au démarrage) et « Avec une clé d'API, ne jamais charger l'IA de ce PC ».
+
+## Imprimante 3D (Elegoo Centauri Carbon et les autres « SDCP »)
+
+- Jarvis trouve tout seul l'imprimante sur le Wi-Fi. Page **Imprimante 3D** de la grande île : caméra, avancement, couche, temps restant, heure de fin, températures, boutons **Pause / Reprendre**, **Arrêter** (deux clics), **Lumière**, **Ouvrir le slicer** (Elegoo Slicer, OrcaSlicer, Cura…).
+- Pendant une impression, la pilule montre le **pourcentage et le temps restant**. À la fin (ou à l'arrêt, ou à une pause), l'île **sonne** et Jarvis le **dit à voix haute**. Chaque option se coupe en bas de la page.
+- À la voix : « où en est l'impression ? », « mets l'impression en pause », « allume la lumière de l'imprimante ».
+
+## Thèmes
+
+- Grande île › Paramètres › Apparence › **Thème** : 20 thèmes, dont Neutre, Pomme clair, Pomme sombre, Noël, Halloween, Glace, Sakura, Plage, Galaxie et Rétro 80. Les thèmes de fête ont un petit décor animé (neige et guirlande, chauves-souris, pétales, bulles, étoiles filantes, grille néon), qu'on coupe avec « Décors animés du thème ».
 - **Voix** : dis « change de voix » ou choisis-la dans les paramètres de la grande île. Une voix pas encore téléchargée l'est la première fois (Kokoro ≈ 340 Mo, Piper ≈ 60 Mo).
 
 ## Pouvoirs sur le PC (écrits en Rust)

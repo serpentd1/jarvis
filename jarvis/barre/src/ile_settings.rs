@@ -5,7 +5,7 @@ use crate::brain::{MODELS, STYLES};
 use crate::config::IleCfg;
 use crate::gfx::FONT_NAMES;
 use crate::island_cards::GRAD_NAMES;
-use crate::island_draw::ACCENT_NAMES;
+use crate::island_draw::{ACCENT_NAMES, PRESET_NAMES};
 
 pub const TABS: [&str; 18] = [
     "Apparence",
@@ -59,12 +59,12 @@ macro_rules! ch {
     };
 }
 
-const PRESET_NAMES: [&str; 10] = ["Nuit", "Verre", "Aurore", "Océan", "Forêt", "Coucher de soleil", "Bonbon", "Néon", "Clair", "Café"];
 
 pub fn opts() -> Vec<Opt> {
     vec![
         // 0 Apparence
         ch!(0, "Thème", preset, &PRESET_NAMES),
+        b!(0, "Décors animés du thème (neige à Noël, chauves-souris…)", deco),
         ch!(0, "Couleur d'accent", accent, &ACCENT_NAMES),
         b!(0, "Fond en dégradé", gradient),
         n!(0, "Arrondi des coins", radius, 6.0, 40.0, 2.0, "px"),

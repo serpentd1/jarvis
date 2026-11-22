@@ -138,7 +138,19 @@ pub struct Printer {
     pub layer: i64,
     pub total: i64,
     pub left_min: i64,
+    pub elapsed_min: i64,
     pub file: String,
+    /// Identifiant de l'impression (une seule alarme par impression).
+    pub task: String,
+    /// Températures en °C (buse, plateau, caisson) et leurs cibles.
+    pub nozzle: i64,
+    pub nozzle_target: i64,
+    pub bed: i64,
+    pub bed_target: i64,
+    pub box_temp: i64,
+    pub light: bool,
+    pub name: String,
+    pub ip: String,
 }
 
 #[derive(Clone, Default)]
@@ -199,6 +211,10 @@ pub enum Msg {
     DiscordState(String),
     WinNotifState(String),
     Printer(Printer),
+    /// Imprimante trouvée sur le Wi-Fi (adresse, nom) ; adresse vide = rien trouvé.
+    PrinterFound(String, String),
+    /// Image de la caméra de l'imprimante (None = caméra injoignable).
+    PrinterCam(Option<tiny_skia::Pixmap>),
     School(crate::pronote::School),
     /// Notification Pronote : 0 note, 1 devoir, 2 cours annulé.
     PNotify(u8, String, String),

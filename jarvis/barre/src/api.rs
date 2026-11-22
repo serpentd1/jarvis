@@ -51,6 +51,8 @@ pub enum ApiReq {
     Dnd { on: Option<bool> },
     Notifs { depuis: u64 },
     Mail { n: usize },
+    /// Imprimante 3D : « etat », « pause », « reprendre », « arreter », « lumiere » (allumer / éteindre).
+    Imprimante { action: String },
     /// Jarvis s'éteint (« éteins-toi », menu Quitter) : l'appli entière s'arrête avec lui.
     Quit,
 }
@@ -253,6 +255,8 @@ fn handle(s: TcpStream, out: &Out) {
         ("POST", "/pronote/pai") => ApiReq::Pai { jour: txt("jour"), matiere: txt("matiere"), heure: txt("heure"), sauter: j["y_va"].as_bool() != Some(true) },
         ("POST", "/ne-pas-deranger") => ApiReq::Dnd { on: j["actif"].as_bool() },
         ("POST", "/notif") => ApiReq::Notif { titre: txt("titre"), texte: txt("texte"), source: txt("source") },
+        ("POST", "/imprimante") => ApiReq::Imprimante { action: txt("action") },
+        ("GET", "/imprimante") => ApiReq::Imprimante { action: "etat".into() },
         ("POST", "/quitter") => ApiReq::Quit,
         // le cerveau (cerveau.rs) : traité dans le fil de la requête, la réponse part phrase par phrase
         ("POST", "/cerveau") => return cerveau_flux(s, &j),

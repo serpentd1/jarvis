@@ -22,19 +22,40 @@ pub struct Preset {
     pub c1: [u8; 3],
     pub accent: [u8; 3],
     pub light: bool,
+    /// Décor animé du thème (réglage « Décors animés du thème ») : 0 aucun, 1 neige et guirlande (Noël),
+    /// 2 chauves-souris (Halloween), 3 éclats de givre (Glace), 4 pétales (Sakura), 5 bulles (Plage),
+    /// 6 étoiles et étoile filante (Galaxie), 7 grille néon (Rétro 80).
+    pub deco: u8,
 }
 
-pub const PRESETS: [Preset; 10] = [
-    Preset { name: "Nuit", c0: [10, 10, 12], c1: [26, 26, 32], accent: [52, 199, 89], light: false },
-    Preset { name: "Verre", c0: [22, 24, 34], c1: [44, 48, 66], accent: [120, 180, 255], light: false },
-    Preset { name: "Aurore", c0: [18, 12, 44], c1: [8, 74, 84], accent: [110, 240, 190], light: false },
-    Preset { name: "Océan", c0: [4, 24, 54], c1: [0, 86, 130], accent: [90, 200, 250], light: false },
-    Preset { name: "Forêt", c0: [10, 32, 18], c1: [38, 72, 36], accent: [150, 225, 100], light: false },
-    Preset { name: "Coucher de soleil", c0: [72, 16, 52], c1: [172, 72, 30], accent: [255, 175, 70], light: false },
-    Preset { name: "Bonbon", c0: [92, 30, 102], c1: [40, 62, 142], accent: [255, 130, 210], light: false },
-    Preset { name: "Néon", c0: [6, 4, 14], c1: [24, 6, 38], accent: [0, 255, 210], light: false },
-    Preset { name: "Clair", c0: [248, 248, 252], c1: [226, 230, 244], accent: [10, 132, 255], light: true },
-    Preset { name: "Café", c0: [40, 28, 20], c1: [74, 52, 36], accent: [235, 180, 120], light: false },
+pub const PRESETS: [Preset; 20] = [
+    Preset { name: "Nuit", c0: [10, 10, 12], c1: [26, 26, 32], accent: [52, 199, 89], light: false, deco: 0 },
+    Preset { name: "Verre", c0: [22, 24, 34], c1: [44, 48, 66], accent: [120, 180, 255], light: false, deco: 0 },
+    Preset { name: "Aurore", c0: [18, 12, 44], c1: [8, 74, 84], accent: [110, 240, 190], light: false, deco: 0 },
+    Preset { name: "Océan", c0: [4, 24, 54], c1: [0, 86, 130], accent: [90, 200, 250], light: false, deco: 0 },
+    Preset { name: "Forêt", c0: [10, 32, 18], c1: [38, 72, 36], accent: [150, 225, 100], light: false, deco: 0 },
+    Preset { name: "Coucher de soleil", c0: [72, 16, 52], c1: [172, 72, 30], accent: [255, 175, 70], light: false, deco: 0 },
+    Preset { name: "Bonbon", c0: [92, 30, 102], c1: [40, 62, 142], accent: [255, 130, 210], light: false, deco: 0 },
+    Preset { name: "Néon", c0: [6, 4, 14], c1: [24, 6, 38], accent: [0, 255, 210], light: false, deco: 0 },
+    Preset { name: "Clair", c0: [248, 248, 252], c1: [226, 230, 244], accent: [10, 132, 255], light: true, deco: 0 },
+    Preset { name: "Café", c0: [40, 28, 20], c1: [74, 52, 36], accent: [235, 180, 120], light: false, deco: 0 },
+    // 1.4 : dix thèmes de plus
+    Preset { name: "Neutre", c0: [36, 36, 38], c1: [54, 54, 58], accent: [152, 152, 160], light: false, deco: 0 },
+    Preset { name: "Pomme clair", c0: [246, 246, 248], c1: [234, 234, 239], accent: [0, 113, 227], light: true, deco: 0 },
+    Preset { name: "Pomme sombre", c0: [28, 28, 30], c1: [44, 44, 46], accent: [10, 132, 255], light: false, deco: 0 },
+    Preset { name: "Noël", c0: [110, 14, 24], c1: [14, 74, 40], accent: [255, 210, 90], light: false, deco: 1 },
+    Preset { name: "Halloween", c0: [24, 10, 34], c1: [84, 32, 6], accent: [255, 140, 20], light: false, deco: 2 },
+    Preset { name: "Glace", c0: [226, 242, 252], c1: [188, 218, 242], accent: [0, 138, 206], light: true, deco: 3 },
+    Preset { name: "Sakura", c0: [255, 232, 241], c1: [246, 200, 220], accent: [214, 64, 124], light: true, deco: 4 },
+    Preset { name: "Plage", c0: [0, 92, 124], c1: [18, 150, 158], accent: [255, 214, 110], light: false, deco: 5 },
+    Preset { name: "Galaxie", c0: [8, 6, 30], c1: [44, 16, 78], accent: [186, 146, 255], light: false, deco: 6 },
+    Preset { name: "Rétro 80", c0: [26, 6, 46], c1: [96, 12, 84], accent: [255, 64, 196], light: false, deco: 7 },
+];
+
+/// Noms des thèmes (réglage « Thème »), dans l'ordre de PRESETS.
+pub const PRESET_NAMES: [&str; 20] = [
+    "Nuit", "Verre", "Aurore", "Océan", "Forêt", "Coucher de soleil", "Bonbon", "Néon", "Clair", "Café",
+    "Neutre", "Pomme clair", "Pomme sombre", "Noël", "Halloween", "Glace", "Sakura", "Plage", "Galaxie", "Rétro 80",
 ];
 
 pub const ACCENT_NAMES: [&str; 10] = ["Celle du thème", "Celle de Jarvis", "Vert", "Bleu", "Violet", "Rose", "Orange", "Rouge", "Jaune", "Turquoise"];
@@ -176,7 +197,7 @@ pub fn target(r: &R) -> (Mode, f32, f32) {
     let mode = r.st.mode(r.ring.is_some(), r.jarvis.active(), c);
     let (w, h) = match mode {
         Mode::Pill => {
-            let extra = if c.pill_timer && r.clocks.busy() { 78.0 } else { 0.0 };
+            let extra = if c.pill_timer && r.clocks.busy() { 78.0 } else { 0.0 } + if impression_dans_pilule(r) { 122.0 } else { 0.0 };
             (c.pill_width + extra, c.pill_height)
         }
         Mode::Toast => (440.0, 68.0),
@@ -188,6 +209,12 @@ pub fn target(r: &R) -> (Mode, f32, f32) {
         Mode::View => (main_size(c).0.max(800.0), 350.0),
     };
     (mode, w, h)
+}
+
+/// Une impression 3D est en cours et doit s'afficher dans la pilule.
+pub(crate) fn impression_dans_pilule(r: &R) -> bool {
+    let p = &r.d.printer;
+    r.cfg.printer.on && r.cfg.printer.pilule && p.online && crate::imprimante::is_active(p.status)
 }
 
 /// Marges autour de la pilule (zone qui capte la souris, ombre, lueur) et décalage du haut.
@@ -223,8 +250,11 @@ pub fn fx_interval(r: &R) -> Option<u32> {
         || r.st.typing
         || (open && r.clocks.chrono_since.is_some())
         || (open && r.st.view == View::Memory && r.mem.moving);
+    let decor = c.deco && preset(c).deco > 0;
     if anim {
         Some(if open && crate::island_big::is_big(r) { 80 } else if open { 33 } else { 40 })
+    } else if decor {
+        Some(if open { 50 } else { 70 })
     } else if r.clocks.busy() || (open && c.seconds) || r.st.toast.is_some() {
         Some(250)
     } else {
@@ -588,16 +618,29 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
             if c.snow {
                 snow(&mut cx, r, tw, th);
             }
+            if c.deco && p.deco > 0 {
+                deco(&mut cx, r, p.deco, tw, th);
+            }
             if alpha > 0.9 {
                 hits = cx.hits;
             }
         }
-        let mut pt = Paint::default();
-        pt.blend_mode = BlendMode::DestinationIn;
-        pt.set_color(Color::BLACK);
-        layer.fill_path(&path, &pt, FillRule::Winding, Transform::identity(), None);
+        // découpe à la forme de la pilule : un masque (un « DestinationIn » ne touche pas ce qui est
+        // hors du tracé, et la neige ou les décors dépassaient)
         let pp = PixmapPaint { opacity: alpha, ..Default::default() };
-        pm.draw_pixmap(0, 0, layer.as_ref(), &pp, Transform::identity(), None);
+        match tiny_skia::Mask::new(pm.width(), pm.height()) {
+            Some(mut masque) => {
+                masque.fill_path(&path, FillRule::Winding, true, Transform::identity());
+                pm.draw_pixmap(0, 0, layer.as_ref(), &pp, Transform::identity(), Some(&masque));
+            }
+            None => {
+                let mut pt = Paint::default();
+                pt.blend_mode = BlendMode::DestinationIn;
+                pt.set_color(Color::BLACK);
+                layer.fill_path(&path, &pt, FillRule::Winding, Transform::identity(), None);
+                pm.draw_pixmap(0, 0, layer.as_ref(), &pp, Transform::identity(), None);
+            }
+        }
     }
     if c.pet > 0 {
         pet(&mut pm, c.pet, px, py, pw, r.t(), s);
@@ -770,6 +813,17 @@ pub(crate) fn pill(c: &mut Ctx, r: &R, w: f32, h: f32) {
         c.ring(cx, h / 2.0, 7.0, col.a(0.25), 2.4);
         arc(c, cx, h / 2.0, 7.0, frac, col);
         xr -= tw + 28.0;
+    }
+    // impression 3D en cours : avancement et temps restant
+    if impression_dans_pilule(r) {
+        let pr = &r.d.printer;
+        let pause = crate::imprimante::en_pause(pr.status);
+        let txt = if pause { format!("{} % · pause", pr.progress) } else { format!("{} % · {}", pr.progress, crate::imprimante::duree(pr.left_min)) };
+        let col = if pause { ORANGE } else { t.accent };
+        let tw = c.measure(Wt::Semibold, 13.0, &txt);
+        c.text(Wt::Semibold, 13.0, xr - tw, base, col, &txt);
+        crate::island_cards::icon(c, Tab::Printer, xr - tw - 15.0, h / 2.0, col);
+        xr -= tw + 32.0;
     }
     // badges au milieu
     let n = important_mails(r.d, cf).len();
@@ -1816,6 +1870,132 @@ pub(crate) fn snow(c: &mut Ctx, r: &R, w: f32, h: f32) {
         let x = (i as f32 * 73.3 + (t * 0.7 + i as f32).sin() * 6.0).rem_euclid(w);
         let y = (t * sp + i as f32 * 37.0).rem_euclid(h + 10.0) - 5.0;
         c.circle(x, y, 1.0 + (i % 3) as f32 * 0.6, WHITE.a(0.55));
+    }
+}
+
+/// Petit nombre pseudo-aléatoire stable (0..1) pour placer les décors.
+fn h01(i: u32, k: u32) -> f32 {
+    let mut x = i.wrapping_mul(0x9E37_79B9) ^ k.wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 12;
+    (x & 0xFFFF) as f32 / 65535.0
+}
+
+/// Décors animés des thèmes de fête (dessinés par-dessus le contenu, très discrets).
+pub(crate) fn deco(c: &mut Ctx, r: &R, kind: u8, w: f32, h: f32) {
+    let t = r.t();
+    let acc = accent(r);
+    match kind {
+        1 => {
+            // Noël : neige + guirlande lumineuse le long du haut
+            snow(c, r, w, h);
+            let cols = [Rgba::rgb8(255, 70, 70), Rgba::rgb8(90, 220, 110), Rgba::rgb8(255, 210, 90), Rgba::rgb8(110, 170, 255)];
+            let n = ((w - 30.0) / 22.0).max(1.0) as usize;
+            for i in 0..n {
+                let x = 15.0 + i as f32 * 22.0 + 11.0;
+                let y = 4.0 + ((x / w) * std::f32::consts::PI * 6.0).sin().abs() * 3.0;
+                let on = 0.35 + 0.65 * ((t * 2.2 + i as f32 * 1.3).sin() * 0.5 + 0.5);
+                let col = cols[i % 4];
+                c.circle(x, y, 4.5, col.a(0.18 * on));
+                c.circle(x, y, 2.0, col.a(on));
+            }
+        }
+        2 => {
+            // Halloween : chauves-souris qui traversent en battant des ailes
+            for i in 0..4u32 {
+                let v = 14.0 + h01(i, 1) * 18.0;
+                let x = (t * v + h01(i, 2) * w * 1.6).rem_euclid(w + 40.0) - 20.0;
+                let y = h * (0.2 + 0.6 * h01(i, 3)) + (t * 1.7 + i as f32).sin() * 4.0;
+                let bat = (t * 9.0 + i as f32 * 2.0).sin() * 3.2;
+                let col = Rgba(0.05, 0.03, 0.06, 0.75);
+                c.circle(x, y, 2.4, col);
+                c.line(x - 1.5, y, x - 7.0, y - bat, 1.6, col);
+                c.line(x - 7.0, y - bat, x - 10.0, y - bat * 0.2, 1.4, col);
+                c.line(x + 1.5, y, x + 7.0, y - bat, 1.6, col);
+                c.line(x + 7.0, y - bat, x + 10.0, y - bat * 0.2, 1.4, col);
+            }
+            // quelques braises orange qui montent
+            for i in 0..8u32 {
+                let x = h01(i, 4) * w + (t + i as f32).sin() * 3.0;
+                let y = h - (t * (6.0 + h01(i, 5) * 8.0) + h01(i, 6) * h).rem_euclid(h);
+                c.circle(x, y, 1.1, acc.a(0.45 * (y / h)));
+            }
+        }
+        3 => {
+            // Glace : éclats de givre qui scintillent
+            for i in 0..16u32 {
+                let (x, y) = (h01(i, 7) * w, h01(i, 8) * h);
+                let k = ((t * 1.6 + h01(i, 9) * 6.3).sin() * 0.5 + 0.5).powi(3);
+                if k < 0.05 {
+                    continue;
+                }
+                let l = 2.0 + 3.5 * k;
+                let col = Rgba(1.0, 1.0, 1.0, 0.85 * k);
+                c.line(x - l, y, x + l, y, 1.0, col);
+                c.line(x, y - l, x, y + l, 1.0, col);
+                c.line(x - l * 0.5, y - l * 0.5, x + l * 0.5, y + l * 0.5, 0.8, col.a(0.6 * k));
+                c.line(x - l * 0.5, y + l * 0.5, x + l * 0.5, y - l * 0.5, 0.8, col.a(0.6 * k));
+            }
+        }
+        4 => {
+            // Sakura : pétales roses qui tombent en biais
+            for i in 0..14u32 {
+                let v = 7.0 + h01(i, 10) * 8.0;
+                let y = (t * v + h01(i, 11) * (h + 20.0)).rem_euclid(h + 20.0) - 10.0;
+                let x = (h01(i, 12) * w + t * v * 0.6 + (t * 1.3 + i as f32).sin() * 5.0).rem_euclid(w);
+                let a = 0.55 + 0.3 * (t * 2.0 + i as f32).sin();
+                let ww = 3.0 + 2.0 * ((t * 2.5 + i as f32).sin().abs());
+                c.rr(x - ww / 2.0, y - 1.8, ww, 3.6, 1.8, Rgba::rgb8(255, 150, 190).a(a));
+            }
+        }
+        5 => {
+            // Plage : bulles qui remontent en ondulant
+            for i in 0..12u32 {
+                let v = 8.0 + h01(i, 13) * 10.0;
+                let y = h + 6.0 - (t * v + h01(i, 14) * (h + 12.0)).rem_euclid(h + 12.0);
+                let x = h01(i, 15) * w + (t * 2.0 + i as f32).sin() * 4.0;
+                let rr = 1.5 + h01(i, 16) * 2.5;
+                c.ring(x, y, rr, WHITE.a(0.4), 1.0);
+                c.circle(x - rr * 0.35, y - rr * 0.35, rr * 0.25, WHITE.a(0.5));
+            }
+        }
+        6 => {
+            // Galaxie : étoiles qui scintillent et une étoile filante de temps en temps
+            for i in 0..26u32 {
+                let (x, y) = (h01(i, 17) * w, h01(i, 18) * h);
+                let k = 0.25 + 0.75 * ((t * (0.8 + h01(i, 19) * 1.5) + h01(i, 20) * 6.3).sin() * 0.5 + 0.5);
+                c.circle(x, y, 0.6 + h01(i, 21) * 0.9, WHITE.a(0.7 * k));
+            }
+            let cycle = t.rem_euclid(7.0);
+            if cycle < 0.9 {
+                let n = (t / 7.0).floor() as u32;
+                let k = cycle / 0.9;
+                let (x0, y0) = (w * (0.3 + 0.6 * h01(n, 22)), h * 0.15);
+                let (x, y) = (x0 - k * w * 0.25, y0 + k * h * 0.6);
+                let fade = 1.0 - k;
+                c.line(x, y, x + 26.0, y - 9.0, 1.4, WHITE.a(0.25 * fade));
+                c.line(x, y, x + 10.0, y - 3.5, 1.6, WHITE.a(0.8 * fade));
+            }
+        }
+        7 => {
+            // Rétro 80 : grille néon qui défile vers le bas, en perspective (plus basse dans la pilule)
+            let y0 = h * if h < 70.0 { 0.74 } else { 0.62 };
+            let col = acc.a(0.22);
+            let off = (t * 0.6).rem_euclid(1.0);
+            for k in 0..6 {
+                let f = (k as f32 + off) / 6.0;
+                let y = y0 + (h - y0) * f * f;
+                c.line(0.0, y, w, y, 1.0, col.a(0.10 + 0.25 * f));
+            }
+            let cx = w / 2.0;
+            for k in -8..=8 {
+                let xb = cx + k as f32 * w / 10.0;
+                c.line(cx + k as f32 * 6.0, y0, xb, h, 1.0, col.a(0.16));
+            }
+            c.line(0.0, y0, w, y0, 1.2, acc.a(if h < 70.0 { 0.22 } else { 0.45 }));
+        }
+        _ => {}
     }
 }
 

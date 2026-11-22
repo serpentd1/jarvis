@@ -98,6 +98,7 @@ pub fn glyph(t: Tab) -> char {
         Tab::Accounts => '\u{E77B}',
         Tab::History => '\u{E81C}',
         Tab::Today => '\u{E8BF}',
+        Tab::Printer => '\u{E749}',
     }
 }
 
@@ -258,6 +259,13 @@ pub fn icon_drawn(c: &mut Ctx, t: Tab, cx: f32, cy: f32, col: Rgba) {
             c.line(cx - 4.0, cy - 8.5, cx - 4.0, cy - 4.5, lw, col);
             c.line(cx + 4.0, cy - 8.5, cx + 4.0, cy - 4.5, lw, col);
             c.rr(cx - 4.0, cy + 0.5, 5.0, 4.5, 1.0, col);
+        }
+        Tab::Printer => {
+            // imprimante 3D : le cadre, la buse sur son rail et le plateau
+            c.rr_stroke(cx - 8.0, cy - 8.0, 16.0, 16.0, 2.5, col, lw);
+            c.line(cx - 8.0, cy - 3.5, cx + 8.0, cy - 3.5, lw, col);
+            c.rr(cx - 2.0, cy - 3.5, 4.0, 3.5, 1.0, col);
+            c.line(cx - 5.0, cy + 4.5, cx + 5.0, cy + 4.5, lw, col);
         }
         Tab::JSettings => {
             for i in 0..8 {

@@ -15,6 +15,7 @@ mod extra;
 mod gfx;
 mod ia;
 mod ile_settings;
+mod imprimante;
 mod reglages;
 mod island;
 mod island_cards;
@@ -129,6 +130,10 @@ pub struct App {
     winnotif_tx: Sender<()>,
     winnotif_on: Arc<std::sync::atomic::AtomicBool>,
     printer_ip: Arc<Mutex<String>>,
+    /// Fil de l'imprimante 3D (ordres, caméra), « chercher sur le Wi-Fi », suivi de la fin d'impression.
+    printer: imprimante::Lien,
+    printer_cherche: Arc<std::sync::atomic::AtomicBool>,
+    printer_suivi: imprimante::Suivi,
     pn_tx: Sender<PJob>,
     sel_day: Option<NaiveDate>,
     /// Dynamic Island (mode « barre en haut de l'écran »).
@@ -538,7 +543,154 @@ impl App {
     }
 
     fn update_printer_ip(&self) {
-        *self.printer_ip.lock().unwrap() = if self.cfg.printer.on { self.cfg.printer.ip.trim().to_string() } else { String::new() };
+        let on = self.cfg.printer.on;
+        *self.printer_ip.lock().unwrap() = if on { self.cfg.printer.ip.trim().to_string() } else { String::new() };
+        self.printer_cherche.store(on && self.cfg.printer.cherche, Ordering::Relaxed);
+    }
+
+    /// Fin, arrêt ou pause d'une impression : sonnerie dans l'île et Jarvis le dit (réglages de la page Imprimante).
+    fn printer_fin(&mut self, fin: imprimante::Fin) {
+        let nom = imprimante::nom_fichier(&self.printer_suivi.fichier);
+        let quoi = if nom.is_empty() { String::new() } else { format!(" « {nom} »") };
+        let (titre, phrase) = match fin {
+            imprimante::Fin::Terminee => ("Impression terminée", format!("Ton impression{quoi} est terminée !")),
+            imprimante::Fin::Arretee => ("Impression arrêtée", format!("L'impression{quoi} s'est arrêtée.")),
+            imprimante::Fin::Pause => ("Impression en pause", format!("L'impression{quoi} est en pause : va voir l'imprimante.")),
+        };
+        sys::log(&format!("imprimante : {titre}"));
+        if self.cfg.printer.alarme {
+            self.ile_ring(titre.to_string());
+        } else {
+            self.notify(island::Src::Jarvis, titre, &phrase, None);
+        }
+        if self.cfg.printer.voix {
+            std::thread::spawn(move || {
+                let _ = jarvis_link::post("/dire", serde_json::json!({"texte": phrase}), 3);
+            });
+        }
+    }
+
+    /// Coupe la voix (le Python de Jarvis : « Hey Jarvis », Whisper, la voix) ou la rallume. La barre reste.
+    fn voix_basculer(&mut self) {
+        if self.jarvis.online() {
+            self.ui.msg = "Je coupe la voix : sa mémoire est libérée. La barre et l'IA écrite restent.".into();
+            self.bruit(sys::Son::Eteint);
+            jarvis_link::fire("/couper-voix", serde_json::json!({}));
+        } else {
+            self.ui.msg = "J'allume la voix (une dizaine de secondes)…".into();
+            self.bruit(sys::Son::Allume);
+            let chemin = self.cfg.ile.jarvis_path.clone();
+            std::thread::spawn(move || jarvis_link::allumer_voix(&chemin));
+        }
+    }
+
+    /// L'imprimante 3D dans /etat (pour l'IA et l'assistant vocal).
+    fn printer_json(&self) -> serde_json::Value {
+        let p = &self.data.printer;
+        if !self.cfg.printer.on {
+            return serde_json::json!({"active": false});
+        }
+        serde_json::json!({
+            "active": true,
+            "connectee": p.online,
+            "nom": p.name,
+            "etat": imprimante::status_label(p.status),
+            "en_cours": p.online && imprimante::is_active(p.status),
+            "fichier": imprimante::nom_fichier(&p.file),
+            "progression": p.progress,
+            "reste_min": p.left_min,
+            "couche": p.layer,
+            "couches": p.total,
+            "buse": p.nozzle,
+            "plateau": p.bed,
+            "lumiere": p.light,
+        })
+    }
+
+    /// Résultat de « chercher l'imprimante sur le Wi-Fi ».
+    fn printer_found(&mut self, ip: String, nom: String) {
+        if ip.is_empty() {
+            self.ui.printer_msg = "Aucune imprimante trouvée sur ce Wi-Fi. Est-elle allumée ?".into();
+            return;
+        }
+        let nom = if nom.trim().is_empty() { "Imprimante 3D".to_string() } else { nom };
+        self.ui.printer_msg = format!("{nom} : {ip}");
+        if self.cfg.printer.ip.trim() != ip {
+            let premiere = self.cfg.printer.ip.trim().is_empty();
+            self.cfg.printer.ip = ip.clone();
+            config::save(&self.cfg);
+            self.update_printer_ip();
+            if premiere {
+                self.notify(island::Src::Jarvis, "Imprimante 3D connectée", &format!("{nom} ({ip}) : Jarvis suit tes impressions."), None);
+            }
+        }
+    }
+
+    /// Ouvre le slicer (Elegoo Slicer, OrcaSlicer, Cura, PrusaSlicer…) : celui des réglages, sinon le premier trouvé.
+    fn printer_slicer(&mut self) {
+        match trouver_slicer(&self.cfg.printer.app) {
+            Some(p) => {
+                sys::open_path(&p);
+                self.ui.printer_msg = format!("J'ouvre {}", p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            }
+            None => self.ui.printer_msg = "Je ne trouve pas de slicer installé (Elegoo Slicer, OrcaSlicer, Cura…).".into(),
+        }
+    }
+
+    /// Pause / reprise / arrêt / lumière / état (page Imprimante et voix). Renvoie la phrase à dire.
+    fn printer_ordre(&mut self, quoi: &str) -> Result<String, String> {
+        let p = self.data.printer.clone();
+        if !self.cfg.printer.on {
+            return Err("L'imprimante 3D est éteinte dans Jarvis (page Imprimante).".into());
+        }
+        if !p.online {
+            return Err(if self.cfg.printer.ip.trim().is_empty() {
+                let _ = self.printer.tx.send(imprimante::PCmd::Chercher);
+                "Je ne trouve pas ton imprimante sur le Wi-Fi : je la cherche.".into()
+            } else {
+                "Ton imprimante ne répond pas. Elle est allumée ?".into()
+            });
+        }
+        let actif = imprimante::is_active(p.status);
+        let q = quoi.to_lowercase();
+        let envoyer = |c: imprimante::PCmd, tx: &Sender<imprimante::PCmd>| {
+            let _ = tx.send(c);
+        };
+        if q.contains("pause") {
+            if !actif {
+                return Err("Il n'y a pas d'impression en cours.".into());
+            }
+            envoyer(imprimante::PCmd::Pause, &self.printer.tx);
+            Ok("Je mets l'impression en pause.".into())
+        } else if q.contains("repren") || q.contains("continu") || q.contains("relanc") {
+            if !imprimante::en_pause(p.status) {
+                return Err("L'impression n'est pas en pause.".into());
+            }
+            envoyer(imprimante::PCmd::Reprendre, &self.printer.tx);
+            Ok("L'impression reprend.".into())
+        } else if q.contains("arret") || q.contains("arrêt") || q.contains("stop") || q.contains("annul") {
+            if !actif {
+                return Err("Il n'y a pas d'impression en cours.".into());
+            }
+            envoyer(imprimante::PCmd::Arreter, &self.printer.tx);
+            Ok("J'arrête l'impression.".into())
+        } else if q.contains("lumi") || q.contains("lampe") {
+            let on = if q.contains("etein") || q.contains("étein") || q.contains("coupe") { false } else if q.contains("allum") { true } else { !p.light };
+            envoyer(imprimante::PCmd::Lumiere(on), &self.printer.tx);
+            Ok(if on { "J'allume la lumière de l'imprimante.".into() } else { "J'éteins la lumière de l'imprimante.".into() })
+        } else {
+            let nom = imprimante::nom_fichier(&p.file);
+            Ok(if actif {
+                let fin = (Local::now() + chrono::Duration::minutes(p.left_min)).format("%H h %M").to_string();
+                let etat = if imprimante::en_pause(p.status) { "en pause" } else { "en cours" };
+                format!("Impression {etat}{} : {} %, il reste {}, fin vers {fin}. Buse à {} °C, plateau à {} °C.",
+                    if nom.is_empty() { String::new() } else { format!(" de {nom}") }, p.progress, imprimante::duree(p.left_min), p.nozzle, p.bed)
+            } else if p.status == 9 {
+                format!("L'impression{} est terminée.", if nom.is_empty() { String::new() } else { format!(" de {nom}") })
+            } else {
+                format!("Ton imprimante est prête ({}), rien n'est en cours.", imprimante::status_label(p.status).to_lowercase())
+            })
+        }
     }
 
     fn on_net(&mut self) {
@@ -636,8 +788,24 @@ impl App {
                     dirty.push(Kind::Discord);
                 }
                 Msg::Printer(p) => {
+                    let en_cours = |p: &data::Printer| p.online && imprimante::is_active(p.status);
+                    let avant = en_cours(&self.data.printer);
+                    let fin = self.printer_suivi.update(&p);
+                    let apres = en_cours(&p);
                     self.data.printer = p;
+                    if avant != apres {
+                        self.ile_anim();
+                    }
+                    if let Some(f) = fin {
+                        self.printer_fin(f);
+                    }
                     dirty.push(Kind::Printer);
+                }
+                Msg::PrinterFound(ip, nom) => self.printer_found(ip, nom),
+                Msg::PrinterCam(pm) => {
+                    if self.printer.cam.load(Ordering::Relaxed) {
+                        self.ui.printer_cam = pm;
+                    }
                 }
                 Msg::School(s) => {
                     if s.connected {
@@ -1273,8 +1441,14 @@ impl App {
         if self.ile_fonts.as_ref().is_none_or(|f| f.0 != font) {
             self.ile_fonts = Fonts::load_family(font).map(|f| (font, f));
         }
-        let res = self.ile_with(|r| (island_draw::render(r), island_draw::fx_interval(r)));
-        let Some((img, fx)) = res else { return };
+        let res = self.ile_with(|r| {
+            let cam = matches!(island_draw::target(r).0, island::Mode::Main | island::Mode::View) && r.st.view == island::View::Printer;
+            (island_draw::render(r), island_draw::fx_interval(r), cam)
+        });
+        let Some((img, fx, cam)) = res else { return };
+        if self.printer.cam.swap(cam, Ordering::Relaxed) && !cam {
+            self.ui.printer_cam = None;
+        }
         if let (Some((pm, x, y, hits)), Some(st)) = (img, &mut self.ile) {
             unsafe { gfx::present(st.hwnd, &pm, x, y) };
             st.hits = hits;
@@ -2910,6 +3084,76 @@ impl App {
                 }
                 self.jact("parametres", json!({"section": rg["section"], "cle": rg["cle"], "valeur": new}));
             }
+            Action::IleN(N_POWER, k) => match k {
+                0 => self.voix_basculer(),
+                1 => {
+                    self.cfg.voix_demarrage = !self.cfg.voix_demarrage;
+                    fichier_sans_voix(self.cfg.voix_demarrage);
+                    config::save(&self.cfg);
+                }
+                2 => {
+                    self.cfg.stop_lmstudio = !self.cfg.stop_lmstudio;
+                    config::save(&self.cfg);
+                }
+                3 => {
+                    self.cfg.sans_local = !self.cfg.sans_local;
+                    ia::regler_sans_local(self.cfg.sans_local);
+                    config::save(&self.cfg);
+                }
+                _ => {
+                    // tout éteindre : la voix (Python), puis la barre (et LM Studio en sortant)
+                    let _ = jarvis_link::post("/quitter", serde_json::json!({}), 2);
+                    unsafe { DestroyWindow(self.main) };
+                }
+            },
+            Action::IleN(N_PRINTER, k) => match k {
+                0 => {
+                    let q = if imprimante::en_pause(self.data.printer.status) { "reprendre" } else { "pause" };
+                    if let Err(e) = self.printer_ordre(q) {
+                        self.ui.printer_msg = e;
+                    }
+                }
+                1 => {
+                    if self.ui.printer_stopping() {
+                        self.ui.printer_stop = None;
+                        match self.printer_ordre("arreter") {
+                            Ok(m) | Err(m) => self.ui.printer_msg = m,
+                        }
+                    } else {
+                        self.ui.printer_stop = Some(std::time::Instant::now());
+                    }
+                }
+                2 => {
+                    if let Err(e) = self.printer_ordre("lumiere") {
+                        self.ui.printer_msg = e;
+                    }
+                }
+                3 => {
+                    self.ui.printer_msg = "Je cherche l'imprimante sur le Wi-Fi…".into();
+                    let _ = self.printer.tx.send(imprimante::PCmd::Chercher);
+                }
+                4 => self.printer_slicer(),
+                5 | 6 | 7 => {
+                    let b = match k {
+                        5 => &mut self.cfg.printer.pilule,
+                        6 => &mut self.cfg.printer.alarme,
+                        _ => &mut self.cfg.printer.voix,
+                    };
+                    *b = !*b;
+                    config::save(&self.cfg);
+                    self.ile_anim();
+                }
+                8 => {
+                    self.ui.reg_page = reglages::PAGE_IMPRIMANTE;
+                    self.set_view(island::View::JSettings, None);
+                }
+                _ => {
+                    self.cfg.printer.on = true;
+                    config::save(&self.cfg);
+                    self.update_printer_ip();
+                    let _ = self.printer.tx.send(imprimante::PCmd::Chercher);
+                }
+            },
             _ => return false,
         }
         true
@@ -3355,6 +3599,10 @@ impl App {
                 }
                 ok(&tx, json!({"ok": true, "actif": self.cfg.ile.dnd}));
             }
+            api::ApiReq::Imprimante { action } => match self.printer_ordre(&action) {
+                Ok(t) => ok(&tx, json!({"ok": true, "dire": t})),
+                Err(e) => ok(&tx, json!({"ok": false, "erreur": e})),
+            },
             api::ApiReq::Quit => {
                 ok(&tx, json!({"ok": true}));
                 unsafe { PostMessageW(self.main, WM_APP_QUIT, 0, 0) };
@@ -3484,6 +3732,7 @@ impl App {
             "date": now.format("%Y-%m-%d").to_string(),
             "jour": format!("{} {}", widgets::JOURS[chrono::Datelike::weekday(&now).num_days_from_monday() as usize].to_lowercase(), now.format("%d/%m/%Y")),
             "meteo": meteo,
+            "imprimante": self.printer_json(),
             "pronote": pronote,
             "mails": mails_json,
             "mails_non_lus": self.data.mail.mails.len(),
@@ -3568,6 +3817,39 @@ impl App {
 /// Détection du matériel gardée dans materiel.txt (dossier de la barre).
 fn materiel_garde() -> Option<profils::Materiel> {
     std::fs::read_to_string(config::dir().join("materiel.txt")).ok().and_then(|t| profils::depuis_texte(&t))
+}
+
+/// Un slicer installé : celui des réglages, sinon Elegoo Slicer, OrcaSlicer, Cura, PrusaSlicer, Bambu Studio…
+fn trouver_slicer(choisi: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if !choisi.trim().is_empty() && PathBuf::from(choisi.trim()).exists() {
+        return Some(PathBuf::from(choisi.trim()));
+    }
+    let bases: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .map(|b| if b.to_lowercase().contains("appdata") { PathBuf::from(b).join("Programs") } else { PathBuf::from(b) })
+        .collect();
+    for nom in ["elegoo", "orca", "cura", "prusa", "bambu", "slicer"] {
+        for base in &bases {
+            let Ok(dossiers) = std::fs::read_dir(base) else { continue };
+            for d in dossiers.flatten() {
+                let n = d.file_name().to_string_lossy().to_lowercase();
+                if !n.contains(nom) || !d.path().is_dir() {
+                    continue;
+                }
+                let Ok(fichiers) = std::fs::read_dir(d.path()) else { continue };
+                let exe = fichiers.flatten().map(|f| f.path()).find(|f| {
+                    let x = f.file_name().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+                    x.ends_with(".exe") && !x.contains("unins") && !x.contains("uninstall") && ["slicer", "orca", "cura", "prusa", "bambu"].iter().any(|k| x.contains(k))
+                });
+                if exe.is_some() {
+                    return exe;
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Regarde le PC (1 à 2 s), garde le résultat dans materiel.txt et pour l'affichage.
@@ -3691,6 +3973,7 @@ unsafe fn show_menu() {
     add(m, 24, "Journal de Jarvis", false, true);
     AppendMenuW(m, MF_SEPARATOR, 0, null());
     add(m, 4, "Lancer au démarrage de Windows", auto, true);
+    add(m, 28, if online { "Couper la voix (libère la mémoire)" } else { "Allumer la voix" }, false, true);
     add(m, 10, "Redémarrer Jarvis", false, true);
     add(m, 9, "Quitter Jarvis", false, true);
     let mut pt = POINT { x: 0, y: 0 };
@@ -3815,6 +4098,9 @@ unsafe fn show_menu() {
         }
         17 => {
             with_app(|a| a.big_open("comptes"));
+        }
+        28 => {
+            with_app(|a| a.voix_basculer());
         }
         16 => {
             with_app(|a| a.big_open("accueil"));
@@ -3990,6 +4276,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         WM_DESTROY => {
             with_app(|a| {
                 config::save(&a.cfg);
+                ARRETER_LMSTUDIO.store(a.cfg.stop_lmstudio, Ordering::Relaxed);
                 tray(a.main, a.icon, NIM_DELETE, None);
                 for s in &a.slots {
                     DestroyWindow(s.hwnd);
@@ -4218,6 +4505,10 @@ fn main() {
         pronote::selftest(&args[2]);
         return;
     }
+    if args.len() >= 2 && args[1] == "--imprimante-test" {
+        imprimante::selftest();
+        return;
+    }
     if args.len() >= 2 && args[1] == "--notif-test" {
         extra::notif_selftest();
         return;
@@ -4311,7 +4602,8 @@ unsafe fn run(ile: Option<bool>) {
     let winnotif_on = Arc::new(std::sync::atomic::AtomicBool::new(cfg.discord.on && cfg.discord.win_notifs));
     let winnotif_tx = extra::spawn_winnotif(out.clone(), winnotif_on.clone());
     let printer_ip = Arc::new(Mutex::new(if cfg.printer.on { cfg.printer.ip.clone() } else { String::new() }));
-    extra::spawn_printer(out.clone(), printer_ip.clone());
+    let printer_cherche = Arc::new(std::sync::atomic::AtomicBool::new(cfg.printer.on && cfg.printer.cherche));
+    let printer = imprimante::spawn(out.clone(), printer_ip.clone(), printer_cherche.clone());
     let pn_tx = pronote::spawn(out.clone(), vault.clone());
     // l'API de la barre est sur 47802 (47800 reste celle de Givre)
     if cfg.ile.api_port.round() as u32 == 47800 {
@@ -4319,6 +4611,8 @@ unsafe fn run(ile: Option<bool>) {
     }
     let api_port = Arc::new(AtomicU32::new(if cfg.ile.api_on { cfg.ile.api_port.round() as u32 } else { 0 }));
     ia::charger(&cfg.mail.ollama_url);
+    ia::regler_sans_local(cfg.sans_local);
+    fichier_sans_voix(cfg.voix_demarrage);
     // profil matériel : la détection est gardée dans materiel.txt ; la 1re fois, on regarde le PC (hors de l'interface)
     match materiel_garde() {
         Some(m) => profils::retenir(m),
@@ -4366,6 +4660,9 @@ unsafe fn run(ile: Option<bool>) {
         winnotif_tx,
         winnotif_on,
         printer_ip,
+        printer,
+        printer_cherche,
+        printer_suivi: imprimante::Suivi::default(),
         pn_tx,
         sel_day: None,
         ile: None,
@@ -4442,5 +4739,22 @@ unsafe fn run(ile: Option<bool>) {
     while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
+    }
+    // « Quitter Jarvis » = tout éteindre : LM Studio aussi (son modèle prend plusieurs Go de mémoire)
+    if ARRETER_LMSTUDIO.load(Ordering::Relaxed) {
+        ia::arreter_lmstudio();
+    }
+}
+
+/// Réglage « Quitter Jarvis arrête aussi LM Studio », lu quand la fenêtre se ferme.
+static ARRETER_LMSTUDIO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// « Allumer la voix au démarrage du PC » : Jarvis.exe (le lanceur) lit ce fichier au démarrage de Windows.
+fn fichier_sans_voix(voix_au_demarrage: bool) {
+    let Some(f) = config::dir().parent().map(|d| d.join("sans-voix-au-demarrage")) else { return };
+    if voix_au_demarrage {
+        let _ = std::fs::remove_file(f);
+    } else {
+        let _ = std::fs::write(f, "Jarvis démarre sans la voix : la barre la rallume (Paramètres › Jarvis et voix).");
     }
 }

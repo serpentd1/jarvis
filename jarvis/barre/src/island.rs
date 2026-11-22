@@ -136,6 +136,12 @@ pub const N_REG_SEC: u8 = 48;
 pub const N_REG_UP: u8 = 49;
 pub const N_REG_DOWN: u8 = 50;
 pub const N_REG_RESET: u8 = 51;
+/// Page Imprimante : 0 pause/reprise, 1 arrêter (2 clics), 2 lumière, 3 chercher, 4 ouvrir le slicer,
+/// 5 pilule, 6 alarme, 7 « Jarvis le dit », 8 taper l'adresse, 9 allumer l'imprimante.
+pub const N_PRINTER: u8 = 52;
+/// Jarvis et voix : 0 couper / allumer la voix, 1 voix au démarrage, 2 arrêter LM Studio en quittant,
+/// 3 ne pas réveiller l'IA du PC avec une clé, 4 tout éteindre.
+pub const N_POWER: u8 = 53;
 
 /// Ce que vise le champ de saisie de l'île.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -252,6 +258,8 @@ pub enum View {
     History = 23,
     /// « Aujourd'hui » : cours, devoirs, météo, mails et minuteurs au même endroit.
     Today = 24,
+    /// Imprimante 3D : caméra, avancement, températures, pause / arrêt / lumière.
+    Printer = 25,
 }
 
 impl View {
@@ -281,6 +289,7 @@ impl View {
             22 => View::Accounts,
             23 => View::History,
             24 => View::Today,
+            25 => View::Printer,
             _ => View::Main,
         }
     }
@@ -362,10 +371,11 @@ pub enum Tab {
     Accounts,
     History,
     Today,
+    Printer,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 23] = [Tab::Home, Tab::Jarvis, Tab::Music, Tab::Discord, Tab::Timers, Tab::Dnd, Tab::Notifs, Tab::Clips, Tab::School, Tab::Calendar, Tab::Mails, Tab::Phone, Tab::Tasks, Tab::Reminders, Tab::Habits, Tab::Routines, Tab::Memory, Tab::Pc, Tab::Batteries, Tab::JSettings, Tab::Accounts, Tab::History, Tab::Today];
+    pub const ALL: [Tab; 24] = [Tab::Home, Tab::Jarvis, Tab::Music, Tab::Discord, Tab::Timers, Tab::Dnd, Tab::Notifs, Tab::Clips, Tab::School, Tab::Calendar, Tab::Mails, Tab::Phone, Tab::Tasks, Tab::Reminders, Tab::Habits, Tab::Routines, Tab::Memory, Tab::Pc, Tab::Batteries, Tab::JSettings, Tab::Accounts, Tab::History, Tab::Today, Tab::Printer];
     pub fn view(self) -> View {
         match self {
             Tab::Home => View::Main,
@@ -391,6 +401,7 @@ impl Tab {
             Tab::Accounts => View::Accounts,
             Tab::History => View::History,
             Tab::Today => View::Today,
+            Tab::Printer => View::Printer,
         }
     }
     /// Onglet qui correspond à une page (les pages Devoirs / Notes vont avec « Pronote »).
@@ -419,6 +430,7 @@ impl Tab {
             View::Accounts => Tab::Accounts,
             View::History => Tab::History,
             View::Today => Tab::Today,
+            View::Printer => Tab::Printer,
         }
     }
     pub fn label(self) -> &'static str {
@@ -446,6 +458,7 @@ impl Tab {
             Tab::Accounts => "COMPTES",
             Tab::History => "HISTORIQUE",
             Tab::Today => "AUJOURD'HUI",
+            Tab::Printer => "IMPRIMANTE",
         }
     }
 }

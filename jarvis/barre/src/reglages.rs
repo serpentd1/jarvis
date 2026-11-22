@@ -31,7 +31,7 @@ pub struct Page {
     pub src: &'static [Src],
 }
 
-pub const PAGES: [Page; 20] = [
+pub const PAGES: [Page; 21] = [
     Page { nom: "Grande appli", groupe: "Grande appli", src: &[Src::Ile(14), Src::Sections] },
     Page { nom: "Couleurs et fond", groupe: "", src: &[Src::Ile(15)] },
     Page { nom: "Texte et lisibilité", groupe: "", src: &[Src::Ile(16), Src::Ile(3)] },
@@ -56,15 +56,19 @@ pub const PAGES: [Page; 20] = [
             Src::ParF("Mails", &[F::MailOn, F::NotifyMail]),
             Src::ParF("Pronote", &[F::PnNext, F::PnHw, F::PnGrades, F::PnInfo, F::PnNGrade, F::PnNHw, F::PnNCancel]),
             Src::ParF(
-                "Musique, Discord, imprimante",
-                &[F::MusicOn, F::DiscordOn, F::NotifyDiscord, F::DcWin, F::DcDmOnly, F::DcMentions, F::DcKeywords, F::DcPeople, F::PrinterOn, F::PrinterIp],
+                "Musique et Discord",
+                &[F::MusicOn, F::DiscordOn, F::NotifyDiscord, F::DcWin, F::DcDmOnly, F::DcMentions, F::DcKeywords, F::DcPeople],
             ),
         ],
     },
     Page { nom: "Agenda et vacances", groupe: "", src: &[Src::Par(2), Src::ParF("Vacances et examen", &[F::Acad, F::ExamName, F::ExamDate])] },
     Page { nom: "Comptes", groupe: "", src: &[Src::Par(3)] },
     Page { nom: "Général", groupe: "", src: &[Src::Par(5)] },
+    Page { nom: "Imprimante 3D", groupe: "", src: &[Src::ParF("Imprimante 3D", &[F::PrinterOn, F::PrinterIp, F::PrinterApp])] },
 ];
+
+/// N° de la page « Imprimante 3D » (bouton « Adresse… » de la page Imprimante).
+pub const PAGE_IMPRIMANTE: usize = 20;
 
 /// Page qui remplace une page de l'ancienne fenêtre « Paramètres… ».
 pub fn page_de_parametres(p: usize) -> usize {

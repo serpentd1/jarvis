@@ -1,17 +1,16 @@
-//! Fils en arrière-plan : musique en cours (Windows), notifications Discord, imprimante 3D.
+//! Fils en arrière-plan : musique en cours (Windows), notifications Discord (l'imprimante 3D est dans imprimante.rs).
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use chrono::Local;
 use serde_json::{Value, json};
 
 use crate::accounts::{self, Acct, Secrets, now_ts, post_form};
-use crate::data::{Media, Msg, Notif, Out, Printer};
+use crate::data::{Media, Msg, Notif, Out};
 
 // ---------- Musique (contrôles multimédias de Windows : Spotify, YouTube, Deezer…) ----------
 
@@ -535,112 +534,4 @@ pub fn notif_selftest() {
         Ok(s)
     })();
     println!("{}", r.unwrap_or_else(|e| format!("erreur : {e}")));
-}
-
-// ---------- Imprimante 3D (Elegoo, protocole SDCP sur WebSocket) ----------
-
-pub fn spawn_printer(out: Out, ip: Arc<Mutex<String>>) {
-    let _ = std::thread::Builder::new().name("imprimante".into()).spawn(move || {
-        let mut last = Printer::default();
-        loop {
-            let addr = ip.lock().unwrap().trim().to_string();
-            if !addr.is_empty() {
-                let _ = printer_session(&addr, &out, &mut last);
-                if last.online {
-                    last.online = false;
-                    out.send(Msg::Printer(last.clone()));
-                }
-            }
-            std::thread::sleep(Duration::from_secs(30));
-        }
-    });
-}
-
-fn sdcp_request(mainboard: &str) -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    format!(
-        r#"{{"Id":"","Data":{{"Cmd":0,"Data":{{}},"RequestID":"{:032x}","MainboardID":"{mainboard}","TimeStamp":{},"From":1}},"Topic":"sdcp/request/{mainboard}"}}"#,
-        now.as_nanos(),
-        now.as_secs()
-    )
-}
-
-fn printer_session(ip: &str, out: &Out, last: &mut Printer) -> Result<(), Box<dyn std::error::Error>> {
-    use tungstenite::{Error as WsError, Message};
-    let addr = (ip, 3030).to_socket_addrs()?.next().ok_or("adresse invalide")?;
-    let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(4))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let (mut ws, _) = tungstenite::client(format!("ws://{ip}:3030/websocket").as_str(), tcp).map_err(|e| e.to_string())?;
-    let mut mainboard = String::new();
-    ws.send(Message::text(sdcp_request(&mainboard)))?;
-    let (mut last_ping, mut last_rx, mut last_sent) = (Instant::now(), Instant::now(), Instant::now() - Duration::from_secs(60));
-    loop {
-        match ws.read() {
-            Ok(Message::Text(t)) => {
-                last_rx = Instant::now();
-                let Ok(v) = serde_json::from_str::<Value>(t.as_str()) else { continue };
-                if mainboard.is_empty() {
-                    if let Some(m) = v["MainboardID"].as_str() {
-                        mainboard = m.to_string();
-                    }
-                }
-                let st = &v["Status"];
-                if st.is_null() {
-                    continue;
-                }
-                let pi = &st["PrintInfo"];
-                let ticks = pi["CurrentTicks"].as_f64().unwrap_or(0.0);
-                let total = pi["TotalTicks"].as_f64().unwrap_or(0.0);
-                let p = Printer {
-                    online: true,
-                    status: pi["Status"].as_i64().unwrap_or(0),
-                    progress: pi["Progress"].as_f64().unwrap_or(0.0).round() as i64,
-                    layer: pi["CurrentLayer"].as_i64().unwrap_or(0),
-                    total: pi["TotalLayer"].as_i64().unwrap_or(0),
-                    left_min: ((total - ticks).max(0.0) / 60.0).round() as i64,
-                    file: pi["Filename"].as_str().unwrap_or("").to_string(),
-                };
-                // n'envoie que les vrais changements (au plus ~1 fois par minute pour le temps restant)
-                let mut cmp = p.clone();
-                cmp.left_min = last.left_min;
-                if cmp != *last || (p.left_min != last.left_min && last_sent.elapsed() > Duration::from_secs(55)) {
-                    *last = p.clone();
-                    last_sent = Instant::now();
-                    out.send(Msg::Printer(p));
-                }
-            }
-            Ok(Message::Close(_)) => return Ok(()),
-            Ok(_) => last_rx = Instant::now(),
-            Err(WsError::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
-            Err(e) => return Err(e.into()),
-        }
-        if last_ping.elapsed() >= Duration::from_secs(25) {
-            ws.send(Message::text("ping"))?;
-            ws.send(Message::text(sdcp_request(&mainboard)))?;
-            last_ping = Instant::now();
-        }
-        if last_rx.elapsed() >= Duration::from_secs(70) {
-            return Err("plus de réponse".into());
-        }
-    }
-}
-
-pub fn status_label(s: i64) -> &'static str {
-    match s {
-        0 => "En attente",
-        5 => "Mise en pause…",
-        6 => "En pause",
-        7 => "Arrêt…",
-        8 | 14 => "Arrêtée",
-        9 => "Terminée",
-        10 => "Vérification",
-        12 => "Reprise",
-        13 => "Impression",
-        1 | 15 | 16 | 18 | 19 | 20 | 21 => "Préparation",
-        _ => "Occupée",
-    }
-}
-
-pub fn is_active(s: i64) -> bool {
-    matches!(s, 1 | 5 | 6 | 7 | 10 | 12 | 13 | 15 | 16 | 18 | 19 | 20 | 21)
 }

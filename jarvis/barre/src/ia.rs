@@ -13,7 +13,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -506,6 +506,50 @@ fn lancer_lmstudio(url: &str) -> bool {
         return false;
     }
     attendre(|| repond(&test))
+}
+
+/// « Tout éteindre » : si le serveur de LM Studio tourne, on décharge ses modèles (plusieurs Go de mémoire)
+/// et on l'arrête. Rien à faire s'il ne tourne pas (sinon `lms` le réveillerait). Jusqu'à ~8 s.
+pub fn arreter_lmstudio() {
+    let port = liste().iter().find(|f| f.nom == "LM Studio").map(|f| adresse(&f.url)).and_then(|u| {
+        u.rsplit(':').next().and_then(|p| p.split('/').next()).and_then(|p| p.parse::<u16>().ok())
+    });
+    let port = port.unwrap_or(1234);
+    let ouvert = std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(300)).is_ok();
+    if !ouvert {
+        return;
+    }
+    let Some(maison) = std::env::var_os("USERPROFILE") else { return };
+    let exe = PathBuf::from(maison).join(".lmstudio").join("bin").join("lms.exe");
+    if !exe.is_file() {
+        return;
+    }
+    sys::log("ia : j'arrête LM Studio (modèles déchargés)");
+    for args in [&["unload", "--all"][..], &["server", "stop"][..]] {
+        if let Ok(mut c) = Command::new(&exe).args(args).creation_flags(SANS_FENETRE).spawn() {
+            let debut = Instant::now();
+            while debut.elapsed() < Duration::from_secs(4) {
+                if c.try_wait().ok().flatten().is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let _ = c.kill();
+        }
+    }
+}
+
+/// Avec une clé d'API qui marche, ne jamais réveiller l'IA du PC (réglage « sans_local »).
+static SANS_LOCAL: AtomicBool = AtomicBool::new(true);
+
+pub fn regler_sans_local(oui: bool) {
+    SANS_LOCAL.store(oui, Ordering::Relaxed);
+}
+
+/// Faut-il laisser de côté LM Studio et Ollama ? Oui si le réglage est mis, qu'on n'a pas choisi
+/// « celui de ce PC », et qu'un service en ligne avec une clé est allumé.
+fn sans_local() -> bool {
+    SANS_LOCAL.load(Ordering::Relaxed) && mode_choisi() != 2 && liste().iter().any(|f| f.on && !f.local && !f.cle.trim().is_empty())
 }
 
 /// Tente de lancer le service s'il est sur ce PC. `true` = il répond maintenant.
@@ -1152,7 +1196,8 @@ fn retenir_modele(nom: &str, m: &str) {
 pub fn discuter(r: &Requete, mut flux: Option<&mut dyn FnMut(&str) -> bool>) -> Result<Retour, Echec> {
     let mut essayes = 0usize;
     let mut derniere = Echec::Injoignable;
-    for f in ordre_du_mode(liste()).iter().filter(|f| f.on) {
+    let sans_pc = sans_local();
+    for f in ordre_du_mode(liste()).iter().filter(|f| f.on && !(sans_pc && f.local)) {
         if avec(|e| e.hors_ligne.get(&f.nom).is_some_and(|t| t.elapsed() < HORS_LIGNE)) {
             continue;
         }

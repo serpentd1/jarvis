@@ -6,7 +6,7 @@ use tiny_skia::{FillRule, FilterQuality, Paint, PathBuilder, Pattern, Pixmap, Sp
 use crate::backdrop::Backdrop;
 use crate::config::{Config, Place};
 use crate::data::{Cat, Data, Event, Holiday, wmo_label};
-use crate::extra::{is_active, status_label};
+use crate::imprimante::{is_active, status_label};
 use crate::gfx::{self, Fonts, Rgba, Theme, WHITE, Wt};
 use crate::pronote::{Alert, Lesson, grade_num, grade_txt};
 

@@ -69,6 +69,7 @@ pub enum F {
     DcId,
     DcSecret,
     PrinterIp,
+    PrinterApp,
     EvTitle,
     EvDate,
     EvTime,
@@ -280,6 +281,7 @@ pub fn get_t(c: &Config, f: F) -> String {
         F::DcKeywords => c.discord.keywords.clone(),
         F::DcPeople => c.discord.people.clone(),
         F::PrinterIp => c.printer.ip.clone(),
+        F::PrinterApp => c.printer.app.clone(),
         F::EvTitle => c.draft.title.clone(),
         F::EvDate => c.draft.date.clone(),
         F::EvTime => c.draft.time.clone(),
@@ -302,7 +304,8 @@ pub fn set_t(c: &mut Config, f: F, v: String) {
         F::DcSecret => c.discord.secret = v,
         F::DcKeywords => c.discord.keywords = v,
         F::DcPeople => c.discord.people = v,
-        F::PrinterIp => c.printer.ip = v,
+        F::PrinterIp => c.printer.ip = v.trim().to_string(),
+        F::PrinterApp => c.printer.app = v.trim().trim_matches('"').to_string(),
         F::EvTitle => c.draft.title = v,
         F::EvDate => c.draft.date = v,
         F::EvTime => c.draft.time = v,
@@ -392,8 +395,9 @@ pub fn spec(page: usize, info: &Info) -> Vec<(K, Option<F>, String)> {
             b.row(K::Toggle, F::DcMentions, "Garder aussi les mentions sur les serveurs");
             b.row(K::Text("brevet, urgent, ce soir"), F::DcKeywords, "Mots-clés importants (vide = tous)");
             b.row(K::Text("pseudo1, pseudo2"), F::DcPeople, "Personnes importantes (vide = toutes)");
-            b.row(K::Toggle, F::PrinterOn, "Imprimante 3D");
-            b.row(K::Text("192.168.1.50"), F::PrinterIp, "Adresse IP de l'imprimante");
+            b.row(K::Toggle, F::PrinterOn, "Suivre mon imprimante 3D (Elegoo)");
+            b.row(K::Text("vide = trouvée toute seule"), F::PrinterIp, "Adresse IP de l'imprimante");
+            b.row(K::Text("vide = Elegoo Slicer, OrcaSlicer…"), F::PrinterApp, "Slicer à ouvrir (chemin du .exe)");
         }
         2 => {
             b.head("Nouvel événement");

@@ -20,6 +20,7 @@ class Etat:
         self.ecouter_maintenant = threading.Event()   # bouton « parler » (île, icône)
         self.quitter = threading.Event()
         self.redemarrer = False
+        self.couper_voix = False                      # « Couper la voix » : le moteur s'arrête, la barre reste
         self.annonces = queue.Queue()                 # phrases à dire dès que Jarvis est libre
         self.selection = None                         # ce que tu regardes dans l'île (ex : un mail), avec l'heure
         self._abonnes = []

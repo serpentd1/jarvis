@@ -19,7 +19,7 @@ pub const BIG_H: f32 = 720.0;
 pub const SEC_PARAMS: usize = 17;
 
 /// Sections de la grande île, dans l'ordre de la barre.
-pub const SECTIONS: [(View, Tab, &str); 20] = [
+pub const SECTIONS: [(View, Tab, &str); 21] = [
     (View::Today, Tab::Today, "Aujourd'hui"),
     (View::Main, Tab::Home, "Accueil"),
     (View::Chat, Tab::Jarvis, "Jarvis"),
@@ -40,6 +40,7 @@ pub const SECTIONS: [(View, Tab, &str); 20] = [
     (View::JSettings, Tab::JSettings, "Paramètres"),
     (View::Accounts, Tab::Accounts, "Comptes"),
     (View::History, Tab::History, "Historique"),
+    (View::Printer, Tab::Printer, "Imprimante 3D"),
 ];
 
 /// État d'interface des sections (liste de tâches choisie, date du rappel, confirmation…).
@@ -72,12 +73,20 @@ pub struct BigUi {
     pub reg_page: usize,
     /// Dernière page de la grande appli (pour « Page qui s'ouvre en premier : Dernière page »).
     pub last_view: Option<View>,
+    /// Dernière image de la caméra de l'imprimante, message de la recherche, 1er clic sur « Arrêter ».
+    pub printer_cam: Option<tiny_skia::Pixmap>,
+    pub printer_msg: String,
+    pub printer_stop: Option<std::time::Instant>,
 }
 
 impl BigUi {
     /// La suppression de la mémoire attend-elle sa confirmation ?
     pub fn mem_confirming(&self) -> bool {
         self.mem_confirm.is_some_and(|at| at.elapsed().as_secs() < 5)
+    }
+    /// « Arrêter l'impression » attend-il son 2e clic ?
+    pub fn printer_stopping(&self) -> bool {
+        self.printer_stop.is_some_and(|at| at.elapsed().as_secs() < 5)
     }
 }
 
@@ -105,6 +114,9 @@ impl Default for BigUi {
             mem_confirm: None,
             reg_page: 0,
             last_view: None,
+            printer_cam: None,
+            printer_msg: String::new(),
+            printer_stop: None,
         }
     }
 }
@@ -290,6 +302,7 @@ fn contenu(c: &mut Ctx, r: &R, cw: f32, ch: f32) {
 pub fn section_page(c: &mut Ctx, r: &R, v: View, w: f32, h: f32) -> bool {
     match v {
         View::Today => today_page(c, r, w, h),
+        View::Printer => printer_page(c, r, w, h),
         View::Tasks => tasks_page(c, r, w, h),
         View::Reminders => reminders_page(c, r, w, h),
         View::Habits => habits_page(c, r, w, h),
@@ -1526,6 +1539,136 @@ pub fn batteries_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
     }
 }
 
+// ---------- Imprimante 3D ----------
+
+fn ligne_kv(c: &mut Ctx, x0: f32, x1: f32, y: f32, k: &str, v: &str) {
+    let t = c.t;
+    c.text(Wt::Regular, 12.5, x0, y, t.fg2, k);
+    c.text_r(Wt::Semibold, 12.5, x1, y, t.fg, v);
+}
+
+pub fn printer_page(c: &mut Ctx, r: &R, w: f32, h: f32) {
+    use crate::imprimante as imp;
+    let t = c.t;
+    let pc = &r.cfg.printer;
+    let p = &r.d.printer;
+    let a = |k: u16| Some(Action::IleN(N_PRINTER, k));
+    let gris = t.fg.a(0.12);
+    // en bas : les réglages rapides
+    let yb = h - 34.0;
+    let mut x = SIDE;
+    for (k, lab, on) in [(5u16, "Dans la pilule", pc.pilule), (6, "Alarme de fin", pc.alarme), (7, "Jarvis le dit", pc.voix)] {
+        let txt = format!("{lab} : {}", if on { "oui" } else { "non" });
+        x += chip(c, x, yb, &txt, if on { t.accent.a(0.28) } else { t.fg.a(0.08) }, if on { t.fg } else { t.fg2 }, a(k)) + 8.0;
+    }
+    x += chip(c, x, yb, "Chercher l'imprimante", gris, t.fg, a(3)) + 8.0;
+    x += chip(c, x, yb, "Adresse…", gris, t.fg, a(8)) + 12.0;
+    if !r.ui.printer_msg.is_empty() {
+        let m = c.fit(Wt::Regular, 12.0, &r.ui.printer_msg, (w - SIDE - x).max(40.0));
+        c.text_r(Wt::Regular, 12.0, w - SIDE, yb + 16.5, t.fg2, &m);
+    }
+    if !pc.on {
+        c.text(Wt::Semibold, 16.0, SIDE, 40.0, t.fg, "L'imprimante 3D est éteinte dans Jarvis.");
+        c.text(Wt::Regular, 12.5, SIDE, 64.0, t.fg2, "Allume-la pour voir l'avancement, la caméra, et sonner à la fin d'une impression.");
+        chip(c, SIDE, 84.0, "Allumer", t.accent.a(0.9), WHITE, a(9));
+        return;
+    }
+    if pc.ip.trim().is_empty() {
+        c.text(Wt::Semibold, 16.0, SIDE, 40.0, t.fg, "Je cherche ton imprimante sur le Wi-Fi…");
+        c.text(Wt::Regular, 12.5, SIDE, 64.0, t.fg2, "Elle doit être allumée et sur le même Wi-Fi que ce PC (Elegoo Centauri Carbon, Saturn, Mars…).");
+        let bw = chip(c, SIDE, 84.0, "Chercher", t.accent.a(0.9), WHITE, a(3));
+        chip(c, SIDE + bw + 8.0, 84.0, "Taper son adresse", gris, t.fg, a(8));
+        return;
+    }
+    // à gauche : la caméra
+    let cw = ((w - 2.0 * SIDE) * 0.6).round();
+    let chh = (cw * 9.0 / 16.0).min(yb - 30.0).max(120.0);
+    let (cx, cy) = (SIDE, 12.0);
+    c.rr(cx, cy, cw, chh, 16.0, t.fg.a(0.07));
+    match &r.ui.printer_cam {
+        Some(img) if p.online => island_cards::cover(c, img, cx, cy, cw, chh, 16.0),
+        _ => {
+            let txt = if p.online { "Caméra : connexion…" } else { "Caméra indisponible" };
+            c.text_c(Wt::Regular, 12.5, cx + cw / 2.0, cy + chh / 2.0 + 4.0, t.fg3, txt);
+        }
+    }
+    if p.online {
+        let lab = if p.light { "Lumière allumée" } else { "Lumière éteinte" };
+        chip(c, cx + 10.0, cy + chh - 34.0, lab, Rgba(0.0, 0.0, 0.0, 0.55), WHITE, a(2));
+    }
+    // à droite : l'état
+    let x0 = cx + cw + 24.0;
+    let x1 = w - SIDE;
+    let lw = (x1 - x0).max(60.0);
+    let nom = if p.name.is_empty() { "Imprimante 3D".to_string() } else { p.name.clone() };
+    let nom = c.fit(Wt::Semibold, 11.0, &nom.to_uppercase(), lw);
+    caps(c, x0, 26.0, t.fg2, &nom);
+    if !p.online {
+        c.text(Wt::Semibold, 20.0, x0, 58.0, t.fg, "Hors ligne");
+        let l1 = c.fit(Wt::Regular, 12.5, &format!("Pas de réponse de {}.", pc.ip.trim()), lw);
+        c.text(Wt::Regular, 12.5, x0, 82.0, t.fg2, &l1);
+        c.text(Wt::Regular, 12.5, x0, 102.0, t.fg2, "Elle est éteinte ? Sinon :");
+        chip(c, x0, 114.0, "Chercher l'imprimante", t.accent.a(0.9), WHITE, a(3));
+        return;
+    }
+    let actif = imp::is_active(p.status);
+    let col = if imp::en_pause(p.status) { ORANGE } else if p.status == 9 { GREEN } else if actif { t.accent } else { t.fg };
+    c.text(Wt::Semibold, 20.0, x0, 58.0, col, imp::status_label(p.status));
+    let mut y = 82.0;
+    if actif || p.status == 9 {
+        let f = c.fit(Wt::Regular, 12.5, &imp::nom_fichier(&p.file), lw);
+        c.text(Wt::Regular, 12.5, x0, y, t.fg2, &f);
+        c.text(Wt::Light, 42.0, x0, y + 50.0, t.fg, &format!("{} %", p.progress.clamp(0, 100)));
+        let k = (p.progress.clamp(0, 100) as f32) / 100.0;
+        c.rr(x0, y + 64.0, lw, 8.0, 4.0, t.track);
+        if k > 0.0 {
+            c.rr(x0, y + 64.0, (lw * k).max(8.0), 8.0, 4.0, col);
+        }
+        y += 98.0;
+        if p.total > 0 {
+            ligne_kv(c, x0, x1, y, "Couche", &format!("{} / {}", p.layer, p.total));
+            y += 22.0;
+        }
+        if actif {
+            ligne_kv(c, x0, x1, y, "Reste", &imp::duree(p.left_min));
+            let fin = (r.now + chrono::Duration::minutes(p.left_min)).format("%H:%M").to_string();
+            ligne_kv(c, x0, x1, y + 22.0, "Fin vers", &fin);
+            y += 44.0;
+        }
+        if p.elapsed_min > 0 {
+            ligne_kv(c, x0, x1, y, "Depuis le début", &imp::duree(p.elapsed_min));
+            y += 22.0;
+        }
+    } else {
+        c.text(Wt::Regular, 12.5, x0, y, t.fg2, "Prête pour la prochaine impression.");
+        y += 22.0;
+    }
+    y += 14.0;
+    caps(c, x0, y, t.fg2, "Températures");
+    y += 22.0;
+    let deg = |v: i64, cible: i64| if cible > 0 { format!("{v} / {cible} °C") } else { format!("{v} °C") };
+    ligne_kv(c, x0, x1, y, "Buse", &deg(p.nozzle, p.nozzle_target));
+    ligne_kv(c, x0, x1, y + 22.0, "Plateau", &deg(p.bed, p.bed_target));
+    if p.box_temp > 0 {
+        ligne_kv(c, x0, x1, y + 44.0, "Caisson", &format!("{} °C", p.box_temp));
+        y += 22.0;
+    }
+    y += 58.0;
+    // les boutons
+    let mut bx = x0;
+    if actif {
+        let (lab, k) = if imp::en_pause(p.status) { ("Reprendre", 0) } else { ("Pause", 0) };
+        bx += chip(c, bx, y, lab, t.accent.a(0.9), WHITE, a(k)) + 8.0;
+        let stop = if r.ui.printer_stopping() { "Sûr ? Re-clique" } else { "Arrêter" };
+        bx += chip(c, bx, y, stop, RED.a(if r.ui.printer_stopping() { 1.0 } else { 0.75 }), WHITE, a(1)) + 8.0;
+    }
+    if bx + 140.0 > x1 {
+        bx = x0;
+        y += 32.0;
+    }
+    chip(c, bx, y, "Ouvrir le slicer", gris, t.fg, a(4));
+}
+
 // ---------- Mon PC ----------
 
 fn go(b: f64) -> String {
@@ -1610,6 +1753,14 @@ pub type JRow = (String, String, Option<bool>, Vec<(Action, &'static str)>);
 
 pub fn jarvis_rows(r: &R) -> Vec<JRow> {
     let mut rows: Vec<JRow> = Vec::new();
+    // ── allumer / éteindre (et la mémoire qu'on libère)
+    let voix = if r.jarvis.online() { "allumée" } else { "coupée (la barre et l'IA écrite marchent)" };
+    let bouton = if r.jarvis.online() { "Couper la voix" } else { "Allumer la voix" };
+    rows.push(("Voix de Jarvis (« Hey Jarvis », Whisper, la voix) : coupée, elle ne prend plus de mémoire".into(), voix.into(), None, vec![(Action::IleN(N_POWER, 0), bouton)]));
+    rows.push(("Allumer la voix au démarrage du PC (sinon seulement la barre)".into(), String::new(), Some(r.cfg.voix_demarrage), vec![(Action::IleN(N_POWER, 1), "")]));
+    rows.push(("« Quitter Jarvis » arrête aussi LM Studio et décharge son modèle".into(), String::new(), Some(r.cfg.stop_lmstudio), vec![(Action::IleN(N_POWER, 2), "")]));
+    rows.push(("Avec une clé d'API, ne jamais charger l'IA de ce PC (LM Studio, plusieurs Go)".into(), String::new(), Some(r.cfg.sans_local), vec![(Action::IleN(N_POWER, 3), "")]));
+    rows.push(("Tout éteindre maintenant (la barre, la voix, LM Studio)".into(), String::new(), None, vec![(Action::IleN(N_POWER, 4), "Éteindre Jarvis")]));
     // ── réglés par la barre : l'IA, le PC, le PAI (marchent même sans l'assistant vocal)
     let choix = crate::profils::CHOIX_MODELE.iter().find(|c| c.0 == r.cfg.ia_mode).map(|c| c.1).unwrap_or("Auto");
     let mode = if r.cfg.ia_mode != 2 && !crate::ia::cle_nvidia() { format!("{choix} — il manque la clé NVIDIA") } else { choix.to_string() };

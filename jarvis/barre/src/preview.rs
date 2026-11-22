@@ -357,6 +357,49 @@ pub fn run_ile(out: &str) {
     tp.toast = Some((INotif { id: 9, kind: "sms".into(), src: Src::Phone, title: "Banque".into(), body: "Votre code de vérification est 482913. Ne le communiquez à personne.".into(), time: now }, std::time::Instant::now()));
     shot(&d, "29_bulle_sms_code_masque", &cfg, &tp, None, &jarvis_idle, &mut log);
     shot(&d, "30_onglet_telephone", &cfg, &mk(true, View::Phone), None, &jarvis_idle, &mut log);
+    // 1.4 : les dix nouveaux thèmes (pilule et île ouverte, avec leur décor)
+    for p in 10..crate::island_draw::PRESETS.len() {
+        let mut c2 = cfg.clone();
+        c2.ile.preset = p;
+        let nom = crate::island_draw::PRESET_NAMES[p].to_lowercase().replace(' ', "_");
+        shot(&d, &format!("60_theme_{p}_{nom}_pilule"), &c2, &mk(false, View::Main), None, &jarvis_idle, &mut log);
+        c2.ile.layout = 1;
+        shot(&d, &format!("61_theme_{p}_{nom}_ouverte"), &c2, &mk(true, View::Main), None, &jarvis_idle, &mut log);
+    }
+    // 1.4 : imprimante 3D (pilule pendant une impression, page de la grande appli avec et sans caméra)
+    d.printer = crate::data::Printer {
+        online: true, status: 13, progress: 42, layer: 126, total: 300, left_min: 85, elapsed_min: 62,
+        file: "support_casque_v3.gcode".into(), nozzle: 220, nozzle_target: 220, bed: 60, bed_target: 60, box_temp: 31,
+        light: true, name: "Centauri Carbon".into(), ip: "192.168.1.50".into(), ..Default::default()
+    };
+    let mut pc = cfg.clone();
+    pc.printer.on = true;
+    pc.printer.ip = "192.168.1.50".into();
+    shot(&d, "70_pilule_impression", &pc, &mk(false, View::Main), None, &jarvis_idle, &mut log);
+    let mut pb = pc.clone();
+    pb.ile.grande = 1;
+    shot(&d, "71_grande_imprimante_sans_camera", &pb, &mk(true, View::Printer), None, &jarvis_idle, &mut log);
+    {
+        let mut cam = Pixmap::new(640, 360).unwrap();
+        let mut paint = tiny_skia::Paint::default();
+        paint.shader = tiny_skia::LinearGradient::new(
+            tiny_skia::Point::from_xy(0.0, 0.0), tiny_skia::Point::from_xy(640.0, 360.0),
+            vec![tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(40, 40, 46, 255)), tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(120, 110, 90, 255))],
+            tiny_skia::SpreadMode::Pad, Transform::identity(),
+        ).unwrap();
+        cam.fill_rect(tiny_skia::Rect::from_xywh(0.0, 0.0, 640.0, 360.0).unwrap(), &paint, Transform::identity(), None);
+        ui.borrow_mut().printer_cam = Some(cam);
+    }
+    shot(&d, "72_grande_imprimante", &pb, &mk(true, View::Printer), None, &jarvis_idle, &mut log);
+    ui.borrow_mut().printer_stop = Some(Instant::now());
+    d.printer.status = 6;
+    shot(&d, "73_grande_imprimante_pause_confirmer", &pb, &mk(true, View::Printer), None, &jarvis_idle, &mut log);
+    shot(&d, "74_onglet_imprimante", &pc, &mk(true, View::Printer), None, &jarvis_idle, &mut log);
+    let mut pv = pb.clone();
+    pv.printer.ip.clear();
+    shot(&d, "75_grande_imprimante_recherche", &pv, &mk(true, View::Printer), None, &jarvis_idle, &mut log);
+    *ui.borrow_mut() = crate::island_big::BigUi::default();
+    d.printer = Default::default();
     // grande île : plusieurs sections
     let mut big = cfg.clone();
     big.ile.grande = 1;

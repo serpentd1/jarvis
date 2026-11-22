@@ -197,14 +197,31 @@ pub struct PrinterCfg {
     pub on: bool,
     pub ip: String,
     pub app: String,
+    /// Avancement (%, temps restant) dans la pilule pendant une impression.
+    pub pilule: bool,
+    /// Sonnerie à la fin (ou à l'arrêt, ou à la pause) d'une impression.
+    pub alarme: bool,
+    /// Jarvis le dit à voix haute.
+    pub voix: bool,
+    /// Chercher l'imprimante sur le Wi-Fi quand on n'a pas son adresse.
+    pub cherche: bool,
+    /// Réglages passés à la version 1.4 (l'imprimante est allumée une fois pour toutes).
+    /// Absent d'un ancien config.json = faux (le défaut du champ, pas celui de la structure).
+    #[serde(default)]
+    pub v14: bool,
 }
 
 impl Default for PrinterCfg {
     fn default() -> Self {
         Self {
-            on: false,
+            on: true,
             ip: String::new(),
             app: String::new(),
+            pilule: true,
+            alarme: true,
+            voix: true,
+            cherche: true,
+            v14: true,
         }
     }
 }
@@ -519,6 +536,8 @@ pub struct IleCfg {
     pub compliments: bool,
     pub eyes: bool,
     pub snow: bool,
+    /// Décor animé des thèmes de fête (Noël, Halloween, Galaxie…), voir island_draw::deco.
+    pub deco: bool,
 }
 
 impl Default for IleCfg {
@@ -741,6 +760,7 @@ impl Default for IleCfg {
             compliments: true,
             eyes: false,
             snow: false,
+            deco: true,
         }
     }
 }
@@ -761,6 +781,12 @@ pub struct Config {
     pub ia_mode: u8,
     /// Profil matériel choisi à la main (voir profils.rs) ; vide = celui trouvé par la détection.
     pub profil: String,
+    /// Allumer la voix (le Python de Jarvis) quand le PC démarre ; non = seulement la barre.
+    pub voix_demarrage: bool,
+    /// « Quitter Jarvis » arrête aussi LM Studio et décharge son modèle (plusieurs Go de mémoire).
+    pub stop_lmstudio: bool,
+    /// Avec une clé d'API qui marche (NVIDIA…), ne jamais réveiller l'IA du PC (LM Studio, Ollama).
+    pub sans_local: bool,
     pub mail: MailCfg,
     pub music: bool,
     pub discord: DiscordCfg,
@@ -841,6 +867,9 @@ impl Default for Config {
         Self {
             ia_mode: 0,
             profil: String::new(),
+            voix_demarrage: true,
+            stop_lmstudio: true,
+            sans_local: true,
             mail: MailCfg::default(),
             music: true,
             discord: DiscordCfg::default(),
@@ -948,6 +977,12 @@ pub fn load() -> Config {
         }
         i.hide_empty_tabs = true;
         i.tabs_v = 2;
+    }
+    // 1.4 : l'imprimante 3D est suivie par Jarvis (trouvée toute seule sur le Wi-Fi), une seule fois
+    if !c.printer.v14 {
+        // (l'ancien « app » ouvrait le widget de l'imprimante : la page Imprimante ouvre maintenant le slicer)
+        let app = if c.printer.app.to_lowercase().contains("widget-imprimante") { String::new() } else { c.printer.app.clone() };
+        c.printer = PrinterCfg { ip: c.printer.ip.clone(), app, ..PrinterCfg::default() };
     }
     // Jarvis n'affiche plus de widgets sur le bureau : ils sont dans Givre, une appli à part.
     c.widgets = false;

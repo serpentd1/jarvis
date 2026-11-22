@@ -8,6 +8,7 @@
   POST /dire {"texte"}            Jarvis dit la phrase à voix haute
   POST /quitter                   arrête Jarvis
   POST /redemarrer                relit config.toml et redémarre (avec Jarvis.exe)
+  POST /couper-voix               coupe la voix (ce moteur) ; la barre reste et peut la rallumer
   GET  /voix                      voix disponibles et voix actuelle
   POST /voix {"nom"}              change de voix (téléchargée si besoin)
   POST /selection {"type":"mail","n","de","sujet"}   ce que tu regardes dans l'île
@@ -51,6 +52,7 @@ class Serveur:
             web.get("/", self._accueil), web.get("/etat", self._etat), web.post("/demander", self._demander),
             web.post("/ecouter", self._ecouter), web.post("/micro", self._micro), web.post("/oublier", self._oublier),
             web.post("/dire", self._dire), web.post("/quitter", self._quitter), web.post("/redemarrer", self._redemarrer),
+            web.post("/couper-voix", self._couper_voix),
             web.get("/voix", self._voix), web.post("/voix", self._choisir_voix),
             web.post("/selection", self._selection),
             web.get("/api/{nom}", self._api), web.post("/api/{nom}", self._api),
@@ -192,6 +194,13 @@ class Serveur:
             log.exception("cerveau/%s", quoi)
             return web.json_response({"ok": False, "erreur": str(e)}, status=500)
         return web.json_response({"ok": True, **resultat})
+
+    async def _couper_voix(self, _r):
+        """Coupe la voix (ce moteur Python) pour libérer la mémoire : la barre reste, Jarvis.exe attend
+        qu'elle redemande la voix."""
+        self.etat.couper_voix = True
+        self.etat.quitter.set()
+        return web.json_response({"ok": True})
 
     async def _redemarrer(self, _r):
         """Relit config.toml et recharge tout (Jarvis.exe relance le moteur)."""

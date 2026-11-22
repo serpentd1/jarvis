@@ -22,6 +22,7 @@ from core import config, journal  # noqa: E402
 
 log = logging.getLogger("jarvis")
 CODE_REDEMARRER = 3
+CODE_SANS_VOIX = 4          # « Couper la voix » : Jarvis.exe garde la barre et attend qu'elle rallume la voix
 _mutex = None
 _plantages = None
 
@@ -202,8 +203,11 @@ class Jarvis:
                 icone.arreter()
             if self.micro:
                 self.micro.arreter()
-            if avec_barre and not self.etat.redemarrer:
+            if avec_barre and not self.etat.redemarrer and not self.etat.couper_voix:
                 self.givre.quitter()          # « Quitter Jarvis » : l'île et les widgets partent aussi
+        if self.etat.couper_voix:
+            log.info("Voix coupée : la barre reste, Jarvis.exe attend qu'elle la rallume.")
+            return CODE_SANS_VOIX
         return CODE_REDEMARRER if self.etat.redemarrer else 0
 
     def _surveiller_lanceur(self, pid: int):

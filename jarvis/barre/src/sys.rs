@@ -182,7 +182,9 @@ pub fn set_autostart(on: bool, jarvis: Option<std::path::PathBuf>) {
         let v = wide(RUN_VALUE);
         if on {
             let Some(exe) = jarvis.or_else(|| std::env::current_exe().ok()) else { return };
-            let data = wide(&format!("\"{}\"", exe.display()));
+            // --demarrage : Jarvis.exe sait que c'est Windows qui le lance (réglage « voix au démarrage du PC »)
+            let lanceur = exe.file_name().is_some_and(|n| n.eq_ignore_ascii_case("Jarvis.exe"));
+            let data = wide(&format!("\"{}\"{}", exe.display(), if lanceur { " --demarrage" } else { "" }));
             RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), REG_SZ, data.as_ptr() as _, (data.len() * 2) as u32);
         } else {
             RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr());

@@ -499,7 +499,8 @@ fn raccourcis(d: &Path, o: &Options) -> Result<(), String> {
     }
     powershell(&script)?;
     if o.demarrage {
-        reg(&["add", CLE_DEMARRAGE, "/v", "Jarvis", "/t", "REG_SZ", "/d", &format!("\"{}\"", exe.display()), "/f"])?;
+        // --demarrage : Jarvis.exe sait que c'est Windows qui le lance (réglage « voix au démarrage du PC »)
+        reg(&["add", CLE_DEMARRAGE, "/v", "Jarvis", "/t", "REG_SZ", "/d", &format!("\"{}\" --demarrage", exe.display()), "/f"])?;
         journal("Jarvis démarrera avec Windows (modifiable dans le menu de son icône).");
     }
     Ok(())

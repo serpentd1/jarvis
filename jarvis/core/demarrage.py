@@ -26,7 +26,8 @@ def activer(oui: bool) -> bool:
                 if not EXE.is_file():
                     log.error("Jarvis.exe introuvable (%s) : démarrage automatique impossible", EXE)
                     return False
-                winreg.SetValueEx(k, NOM, 0, winreg.REG_SZ, f'"{EXE}"')
+                # --demarrage : Jarvis.exe sait que c'est Windows qui le lance (« voix au démarrage du PC »)
+                winreg.SetValueEx(k, NOM, 0, winreg.REG_SZ, f'"{EXE}" --demarrage')
             else:
                 try:
                     winreg.DeleteValue(k, NOM)

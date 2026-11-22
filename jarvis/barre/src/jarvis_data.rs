@@ -88,6 +88,7 @@ pub fn section(name: &str) -> View {
         "historique" | "conversations" => View::History,
         "jarvis" | "chat" => View::Chat,
         "aujourdhui" | "aujourd'hui" | "today" => View::Today,
+        "imprimante" | "imprimante3d" | "printer" => View::Printer,
         _ => View::Main,
     }
 }

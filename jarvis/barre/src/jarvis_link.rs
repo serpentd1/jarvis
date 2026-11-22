@@ -95,9 +95,41 @@ pub fn find_exe(manual: &str) -> Option<PathBuf> {
 }
 
 /// Lance Jarvis sans fenêtre. Introuvable : on ne fait rien.
+/// Jarvis.exe tourne avec la voix coupée : il attend l'événement « Local\Jarvis-voix ».
+/// `allumer` = le déclencher (la voix redémarre). false = Jarvis.exe ne tourne pas.
+fn evenement_voix(allumer: bool) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent};
+    const EVENT_MODIFY_STATE: u32 = 0x0002;
+    let nom: Vec<u16> = "Local\\Jarvis-voix".encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let h = OpenEventW(EVENT_MODIFY_STATE, 0, nom.as_ptr());
+        if h.is_null() {
+            return false;
+        }
+        if allumer {
+            SetEvent(h);
+        }
+        CloseHandle(h);
+    }
+    true
+}
+
+/// « Allumer la voix » : Jarvis.exe la relance s'il attend, sinon on lance Jarvis.exe.
+pub fn allumer_voix(manual: &str) {
+    if !evenement_voix(true) {
+        launch(manual);
+    }
+}
+
 pub fn launch(manual: &str) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // Jarvis.exe est déjà là (voix coupée ou en train de démarrer) : c'est lui qui s'en occupe
+    if evenement_voix(false) {
+        crate::sys::log("Jarvis.exe tourne déjà : je ne le relance pas");
+        return;
+    }
     let Some(p) = find_exe(manual) else {
         crate::sys::log("Jarvis.exe introuvable : pas de lancement");
         return;
@@ -122,7 +154,8 @@ pub fn restart(manual: String) {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
-        launch(&manual);
+        // voix coupée : Jarvis.exe attend, on la rallume
+        allumer_voix(&manual);
     });
 }
 
