@@ -762,3 +762,64 @@ pub fn soft_sound(kind: usize) {
     let b = &s[kind.min(1)];
     unsafe { PlaySoundW(b.as_ptr() as _, std::ptr::null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
 }
+
+// ---------- Horloge des images (calée sur le rafraîchissement de l'écran) ----------
+
+/// Des images sont demandées (une animation tourne, ou un redessin est attendu).
+static IMAGES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Une image a été envoyée à la fenêtre et pas encore dessinée : on n'en empile pas d'autres.
+static IMAGE_EN_ATTENTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FIL_IMAGES: std::sync::OnceLock<std::thread::Thread> = std::sync::OnceLock::new();
+
+/// Démarre (une seule fois) le fil des images : à chaque rafraîchissement de l'écran (DwmFlush, 60 fois
+/// par seconde sur un écran 60 Hz), il envoie `msg` à la fenêtre, tant que des images sont demandées.
+/// Avant, les animations passaient par des minuteries Windows (15,6 ms au mieux, souvent bien plus).
+/// Au repos, le fil dort : il ne se réveille plus du tout.
+pub fn images_demarrer(hwnd: windows_sys::Win32::Foundation::HWND, msg: u32) {
+    use std::sync::atomic::Ordering;
+    let h = hwnd as isize;
+    FIL_IMAGES.get_or_init(|| {
+        let mut envoyee = std::time::Instant::now();
+        std::thread::spawn(move || loop {
+            if !IMAGES_ON.load(Ordering::Acquire) {
+                std::thread::park();
+                continue;
+            }
+            // une image envoyée il y a plus de 250 ms et jamais reçue s'est perdue : on la renvoie
+            if IMAGE_EN_ATTENTE.load(Ordering::Acquire) && envoyee.elapsed() > std::time::Duration::from_millis(250) {
+                IMAGE_EN_ATTENTE.store(false, Ordering::Release);
+            }
+            let t = std::time::Instant::now();
+            let ok = unsafe { windows_sys::Win32::Graphics::Dwm::DwmFlush() } >= 0;
+            // DwmFlush revient tout de suite quand la composition est coupée : on attend nous-mêmes
+            let passe = t.elapsed();
+            if !ok || passe < std::time::Duration::from_millis(3) {
+                std::thread::sleep(std::time::Duration::from_micros(16_667).saturating_sub(passe));
+            }
+            if !IMAGE_EN_ATTENTE.swap(true, Ordering::AcqRel) {
+                envoyee = std::time::Instant::now();
+                if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(h as _, msg, 0, 0) } == 0 {
+                    IMAGE_EN_ATTENTE.store(false, Ordering::Release);      // file pleine : on réessaie
+                }
+            }
+        })
+        .thread()
+        .clone()
+    });
+}
+
+/// Demande (true) ou arrête (false) les images.
+pub fn images(on: bool) {
+    use std::sync::atomic::Ordering;
+    let avant = IMAGES_ON.swap(on, Ordering::AcqRel);
+    if on && !avant {
+        if let Some(t) = FIL_IMAGES.get() {
+            t.unpark();
+        }
+    }
+}
+
+/// À appeler en recevant le message d'image : la suivante pourra être envoyée.
+pub fn image_recue() {
+    IMAGE_EN_ATTENTE.store(false, std::sync::atomic::Ordering::Release);
+}

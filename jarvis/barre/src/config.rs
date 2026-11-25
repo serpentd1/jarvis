@@ -538,6 +538,13 @@ pub struct IleCfg {
     pub snow: bool,
     /// Décor animé des thèmes de fête (Noël, Halloween, Galaxie…), voir island_draw::deco.
     pub deco: bool,
+    /// Île cachée toute seule : une toute petite languette reste visible en haut de l'écran.
+    pub languette: bool,
+    /// Bouton « IA » au début de la barre du haut de l'île : 0 au survol, 1 toujours, 2 caché.
+    pub ia_bouton: usize,
+    /// Niveau de l'IA : 0 complète (la grosse IA, tous les outils), 1 semi (IA légère, moins d'outils),
+    /// 2 coupée (plus d'IA : seulement les commandes simples).
+    pub ia_niveau: usize,
 }
 
 impl Default for IleCfg {
@@ -761,6 +768,9 @@ impl Default for IleCfg {
             eyes: false,
             snow: false,
             deco: true,
+            languette: true,
+            ia_bouton: 0,
+            ia_niveau: 0,
         }
     }
 }
@@ -779,6 +789,8 @@ pub struct Draft {
 pub struct Config {
     /// Mode de l'IA : 0 auto (ultra performant s'il y a une clé NVIDIA), 1 ultra performant, 2 ultra léger.
     pub ia_mode: u8,
+    /// Le choix de modèle « complet » à remettre quand on quitte le niveau semi (voir IleCfg::ia_niveau).
+    pub ia_mode_fort: u8,
     /// Profil matériel choisi à la main (voir profils.rs) ; vide = celui trouvé par la détection.
     pub profil: String,
     /// Allumer la voix (le Python de Jarvis) quand le PC démarre ; non = seulement la barre.
@@ -866,6 +878,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ia_mode: 0,
+            ia_mode_fort: 0,
             profil: String::new(),
             voix_demarrage: true,
             stop_lmstudio: true,

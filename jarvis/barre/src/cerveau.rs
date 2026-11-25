@@ -699,6 +699,21 @@ pub fn repondre(d: Demande, sur_phrase: &mut dyn FnMut(&str) -> bool) -> Rep {
         }
     }
 
+    // niveau de l'IA à la voix : « coupe l'IA », « rallume l'IA », « mets l'IA en léger »
+    if let Some(niv) = niveau_demande(&n) {
+        avec(|e| {
+            if let Some(o) = &e.out {
+                o.send(Msg::IaNiveau(niv));
+            }
+        });
+        let dire = match niv {
+            0 => "C'est fait : l'IA complète est rallumée.",
+            1 => "C'est fait : l'IA passe en mode léger.",
+            _ => "C'est fait : l'IA est coupée. Je ne fais plus que les commandes simples.",
+        };
+        return rep(dire, false);
+    }
+
     // 2. ce qui passe avant l'IA : révision en cours, « oublie tout », raccourcis instantanés
     if d.python {
         if let Ok(v) = jarvis_link::post("/cerveau/avant", json!({"texte": texte, "source": d.source}), 330) {
@@ -727,8 +742,30 @@ pub fn repondre(d: Demande, sur_phrase: &mut dyn FnMut(&str) -> bool) -> Rep {
         }
     }
 
-    // 3. l'IA
+    // 3. l'IA (sauf si elle est coupée par le bouton IA de l'île)
+    if ia::coupee() {
+        return rep("L'IA est coupée : je ne fais que les commandes simples, comme un minuteur ou la musique. Dis « rallume l'IA » ou clique sur le bouton IA de l'île.", false);
+    }
     ia(&reg, &d, &texte, &n, sur_phrase)
+}
+
+/// « coupe l'IA » → 2, « IA légère » → 1, « rallume l'IA » → 0 ; None = ce n'est pas une demande de niveau.
+fn niveau_demande(n: &str) -> Option<u8> {
+    let mots: Vec<&str> = n.split(' ').collect();
+    let ia = mots.iter().any(|m| matches!(*m, "ia" | "l'ia" | "d'ia")) || n.contains("intelligence artificielle");
+    if !ia || mots.len() > 9 {
+        return None;
+    }
+    let a = |l: &[&str]| l.iter().any(|x| mots.iter().any(|m| m.starts_with(x)));
+    if a(&["semi", "leger", "legere", "moitie"]) {
+        Some(1)
+    } else if a(&["coupe", "etein", "desactiv", "arret", "stop"]) {
+        Some(2)
+    } else if a(&["rallum", "allum", "activ", "reactiv", "remet", "complet"]) {
+        Some(0)
+    } else {
+        None
+    }
 }
 
 /// Jarvis a été coupé : sa dernière réponse, dans l'historique, devient ce qu'il a VRAIMENT dit

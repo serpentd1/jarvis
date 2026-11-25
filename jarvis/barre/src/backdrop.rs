@@ -8,8 +8,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETDESKWALLPAPER, SystemPa
 use crate::gfx;
 use crate::sys;
 
+/// Numéro de version du fond flouté (change à chaque chargement ou nouveau flou).
+static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub struct Backdrop {
     pub pm: Pixmap,
+    /// Version de ce fond : l'île garde un fond agrandi tant qu'elle ne change pas.
+    pub version: u64,
     /// pixels d'écran par pixel du fond réduit
     pub scale: f32,
     pub accent: [u8; 3],
@@ -28,6 +33,7 @@ impl Backdrop {
         let accent = accent_of(&base);
         let mut b = Backdrop {
             pm: Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(1, 1).unwrap()),
+            version: 0,
             scale: sw as f32 / w as f32,
             accent,
             base,
@@ -49,6 +55,7 @@ impl Backdrop {
         gfx::box_blur(&mut d, self.w as usize, self.h as usize, r, 3);
         if let Some(pm) = IntSize::from_wh(self.w, self.h).and_then(|s| Pixmap::from_vec(d, s)) {
             self.pm = pm;
+            self.version = GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }

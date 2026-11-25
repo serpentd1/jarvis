@@ -261,7 +261,7 @@ pub fn big_view(c: &mut Ctx, r: &R, w: f32, h: f32) {
         }
         Some((sorte, k)) => {
             let e = 1.0 - (1.0 - k).powi(3);
-            if let Some(mut layer) = tiny_skia::Pixmap::new(c.pm.width(), c.pm.height()) {
+            if let Some(mut layer) = crate::gfx::calque(c.pm.width(), c.pm.height()) {
                 let hits = {
                     let mut sub = Ctx::new(&mut layer, c.f, c.t, c.s, c.ox, c.oy);
                     sub.tf = c.tf;
@@ -279,6 +279,7 @@ pub fn big_view(c: &mut Ctx, r: &R, w: f32, h: f32) {
                 };
                 let pp = tiny_skia::PixmapPaint { opacity: e.clamp(0.0, 1.0), quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
                 c.pm.draw_pixmap(0, 0, layer.as_ref(), &pp, tr, None);
+                crate::gfx::rendre_calque(layer);
             }
         }
         None => contenu(c, r, cw, ch),

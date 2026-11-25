@@ -72,6 +72,8 @@ const WM_APP_QUIT: u32 = WM_APP + 4;
 const WM_APP_ILE: u32 = WM_APP + 5;
 /// Ouvrir le menu (bouton « ••• » de l'île).
 const WM_APP_MENU: u32 = WM_APP + 6;
+/// Une image de l'île : envoyé par le fil des images à chaque rafraîchissement de l'écran (sys::images).
+const WM_APP_FRAME: u32 = WM_APP + 7;
 
 const T_CLOCK: usize = 1;
 const T_VIS: usize = 2;
@@ -142,6 +144,15 @@ pub struct App {
     ile_last_act: Option<Action>,
     ile_last_mode: island::Mode,
     fx_cur: Option<u32>,
+    /// Animation de taille ou de sortie en cours (avancée à chaque image).
+    anim_on: bool,
+    /// Les effets de l'île veulent une image à chaque rafraîchissement de l'écran.
+    fx_vsync: bool,
+    /// Un redessin est attendu à la prochaine image (souris, saisie…) : plusieurs demandes = un seul dessin.
+    redraw: bool,
+    /// Images en cours (pour repartir d'un temps propre quand elles reprennent).
+    images_on: bool,
+    last_frame: std::time::Instant,
     clocks: island::Clocks,
     chat: island::Chat,
     jarvis: island::Jarvis,
@@ -331,9 +342,40 @@ impl App {
         let avant = st.survol;
         st.souris = Some((fx, fy));
         st.survol = st.hits.iter().rposition(|h| fx >= h.x && fx < h.x + h.w && fy >= h.y && fy < h.y + h.h);
-        if effets && st.survol != avant {
-            self.ile_render();
+        let change = effets && st.survol != avant;
+        // souris sur la barre du haut de l'île : le bouton IA apparaît (réglage « au survol »)
+        let (_, top) = island_draw::margins(&self.cfg.ile);
+        let k = st.echelle;
+        let haut = fy >= top * k && fy < (top + 42.0) * k;
+        let haut_change = haut != st.haut;
+        st.haut = haut;
+        if change || (haut_change && self.cfg.ile.ia_bouton == 0) {
+            self.ile_redessin();
         }
+    }
+
+    /// Niveau de l'IA (bouton IA de l'île, Paramètres ou voix) : 0 complète, 1 semi (le modèle léger,
+    /// moins d'outils), 2 coupée (plus aucune question à une IA).
+    fn ia_niveau(&mut self, n: usize) {
+        let n = n.min(2);
+        if self.cfg.ia_mode != 2 {
+            self.cfg.ia_mode_fort = self.cfg.ia_mode;
+        }
+        self.cfg.ile.ia_niveau = n;
+        match n {
+            1 => self.cfg.ia_mode = 2,
+            0 if self.cfg.ia_mode == 2 => self.cfg.ia_mode = if self.cfg.ia_mode_fort == 2 { 0 } else { self.cfg.ia_mode_fort },
+            _ => {}
+        }
+        ia::regler_coupee(n == 2);
+        self.status = match n {
+            0 => "IA complète : la grosse IA, avec tous ses outils.".into(),
+            1 => "IA semi : la petite IA, plus légère, avec moins d'outils.".into(),
+            _ => "IA coupée : Jarvis ne fait plus que les commandes simples.".into(),
+        };
+        self.bruit(sys::Son::Clic);
+        self.ia_change(false);
+        self.ile_render();
     }
 
     /// Mode de l'IA ou profil du PC changé dans la grande application. `voix` : le profil a changé, la
@@ -829,6 +871,7 @@ impl App {
                     self.ile_render();
                 }
                 Msg::MailBody(id, r) => self.mail_body(id, r),
+                Msg::IaNiveau(n) => self.ia_niveau(n as usize),
                 Msg::Phone(p) => self.on_phone(p),
                 Msg::JData(name, r) => self.on_jdata(name, r),
                 Msg::PNotify(k, t, b) => {
@@ -1359,7 +1402,9 @@ impl App {
             let mut p = POINT { x: 0, y: 0 };
             unsafe { GetCursorPos(&mut p) };
             let (x0, x1) = st.zone;
-            if p.y <= 1 && p.x >= x0 - 20 && p.x <= x1 + 20 {
+            let mut r: RECT = unsafe { std::mem::zeroed() };
+            let sur_languette = c.languette && unsafe { IsWindowVisible(st.hwnd) != 0 && GetWindowRect(st.hwnd, &mut r) != 0 } && p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
+            if (p.y <= 1 && p.x >= x0 - 20 && p.x <= x1 + 20) || sur_languette {
                 let since = *st.edge_since.get_or_insert(now);
                 if since.elapsed().as_secs_f32() >= c.reveal_secs.max(0.05) {
                     if st.hidden {
@@ -1434,6 +1479,9 @@ impl App {
 
     fn ile_render(&mut self) {
         if self.ile.as_ref().is_none_or(|s| s.hidden || (s.gone && s.slide >= 1.0)) {
+            if self.languette_ok() {
+                self.languette_render();
+            }
             self.update_fx(None);
             return;
         }
@@ -1443,9 +1491,12 @@ impl App {
         }
         let res = self.ile_with(|r| {
             let cam = matches!(island_draw::target(r).0, island::Mode::Main | island::Mode::View) && r.st.view == island::View::Printer;
-            (island_draw::render(r), island_draw::fx_interval(r), cam)
+            (island_draw::render(r), island_draw::fx_interval(r), cam, island_draw::scale(r))
         });
-        let Some((img, fx, cam)) = res else { return };
+        let Some((img, fx, cam, echelle)) = res else { return };
+        if let Some(st) = &mut self.ile {
+            st.echelle = echelle;
+        }
         if self.printer.cam.swap(cam, Ordering::Relaxed) && !cam {
             self.ui.printer_cam = None;
         }
@@ -1456,6 +1507,7 @@ impl App {
             if !st.gone {
                 st.zone = (x, x + pm.width() as i32);
             }
+            gfx::rendre(pm);
         }
         self.update_fx(fx);
     }
@@ -1464,6 +1516,10 @@ impl App {
     fn update_fx(&mut self, fx: Option<u32>) {
         let visible = self.ile.as_ref().is_some_and(|s| !s.hidden && !(s.gone && s.slide >= 1.0));
         let want = if visible { fx } else if self.clocks.busy() || self.ring.is_some() { Some(500) } else { None };
+        // 20 ms ou moins : une image à chaque rafraîchissement de l'écran (fil des images), pas de minuterie
+        self.fx_vsync = want.is_some_and(|ms| ms <= 20);
+        let want = if self.fx_vsync { None } else { want };
+        self.images_maj();
         if want != self.fx_cur {
             self.fx_cur = want;
             unsafe {
@@ -1604,29 +1660,100 @@ impl App {
 
     fn ile_anim(&mut self) {
         if self.ile.is_some() {
-            unsafe { SetTimer(self.main, T_ILE_ANIM, 15, None) };
+            self.anim_on = true;
+            self.images_maj();
         }
     }
 
-    fn ile_anim_step(&mut self) {
+    /// Un redessin à la prochaine image (au lieu de tout de suite) : la souris peut envoyer des centaines
+    /// de mouvements par seconde, on ne dessine qu'une fois par rafraîchissement de l'écran.
+    fn ile_redessin(&mut self) {
+        if self.ile.is_some() {
+            self.redraw = true;
+            self.images_maj();
+        }
+    }
+
+    /// Démarre ou arrête le fil des images selon ce qui bouge.
+    fn images_maj(&mut self) {
+        let on = self.anim_on || self.fx_vsync || self.redraw;
+        if on && !self.images_on {
+            self.last_frame = std::time::Instant::now();
+        }
+        self.images_on = on;
+        sys::images(on);
+    }
+
+    /// Une image : avance les animations selon le temps écoulé (60 pas par seconde, quel que soit le
+    /// nombre d'images vraiment affichées), puis dessine une seule fois.
+    fn ile_frame(&mut self) {
+        sys::image_recue();
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32();
+        self.last_frame = now;
+        let pas = ((dt * 60.0).round() as u32).clamp(1, 4);
+        if self.anim_on && !self.ile_anim_avance(pas) {
+            self.anim_on = false;
+        }
+        self.redraw = false;
+        if self.fx_vsync {
+            self.ile_fx();
+        } else {
+            self.ile_render();
+        }
+        self.images_maj();
+    }
+
+    /// Avance la taille de l'île et sa sortie vers le haut de `pas` pas. `true` tant que ça bouge.
+    fn ile_anim_avance(&mut self, pas: u32) -> bool {
         let tgt = self.ile_with(island_draw::target);
-        let more = match (tgt, &mut self.ile) {
+        let languette = self.cfg.ile.languette;
+        match (tgt, &mut self.ile) {
             (Some((mode, tw, th)), Some(st)) => {
                 self.ile_last_mode = mode;
-                let a = st.step(tw, th, &self.cfg.ile);
-                let b = st.step_slide(&self.cfg.ile);
-                if st.gone && st.slide >= 1.0 {
-                    // partie : fenêtre cachée (plus de clic bloqué, plus de dessin)
-                    unsafe { ShowWindow(st.hwnd, SW_HIDE) };
+                let mut more = false;
+                for _ in 0..pas {
+                    let a = st.step(tw, th, &self.cfg.ile);
+                    let b = st.step_slide(&self.cfg.ile);
+                    more = a || b;
+                    if !more {
+                        break;
+                    }
                 }
-                a || b
+                if st.gone && st.slide >= 1.0 {
+                    // partie : on rend la mémoire des grandes images ; il ne reste que la languette (ou rien)
+                    gfx::liberer();
+                    island_draw::liberer_fond();
+                    if !languette {
+                        unsafe { ShowWindow(st.hwnd, SW_HIDE) };
+                    }
+                }
+                more
             }
             _ => false,
-        };
-        if !more {
-            unsafe { KillTimer(self.main, T_ILE_ANIM) };
         }
-        self.ile_render();
+    }
+
+    /// La petite languette doit-elle rester visible en haut de l'écran ?
+    /// Oui quand l'île s'est cachée toute seule ou derrière une fenêtre agrandie ; jamais en plein écran (jeux, vidéos).
+    fn languette_ok(&self) -> bool {
+        let Some(st) = &self.ile else { return false };
+        self.cfg.ile.on && self.cfg.ile.languette && ((st.gone && st.slide >= 1.0) || (st.hidden && !st.plein_ecran))
+    }
+
+    /// Dessine la languette (fenêtre de l'île réduite à une petite barre en haut de l'écran).
+    fn languette_render(&mut self) {
+        let Some(Some((pm, x, y))) = self.ile_with(island_draw::languette) else { return };
+        let Some(st) = &mut self.ile else { return };
+        unsafe {
+            if IsWindowVisible(st.hwnd) == 0 {
+                ShowWindow(st.hwnd, SW_SHOWNOACTIVATE);
+                SetWindowPos(st.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            gfx::present(st.hwnd, &pm, x, y);
+        }
+        st.hits.clear();
+        st.win = (x, y);
     }
 
     fn ile_open(&mut self) {
@@ -1729,12 +1856,23 @@ impl App {
 
     fn ile_fullscreen_check(&mut self) {
         let c = &self.cfg.ile;
-        let fs = (c.hide_fullscreen && island::fullscreen_app()) || (c.hide_maximized && island::maximized_app());
+        let plein = c.hide_fullscreen && island::fullscreen_app();
+        let fs = plein || (c.hide_maximized && island::maximized_app());
         // exceptions : sonnerie, notification, Jarvis actif, saisie, île ouverte, coup d'œil par le haut
         let keep = self.ring.is_some() || self.jarvis.active();
         let Some(st) = &mut self.ile else { return };
         let hide = fs && !(keep || st.toast.is_some() || st.typing || st.want || st.peek);
+        let plein_change = st.plein_ecran != plein;
+        st.plein_ecran = plein;
         if hide == st.hidden {
+            if hide && plein_change {
+                // passage plein écran ↔ fenêtre agrandie : la languette apparaît ou disparaît
+                if self.languette_ok() {
+                    self.languette_render();
+                } else if let Some(st) = &self.ile {
+                    unsafe { ShowWindow(st.hwnd, SW_HIDE) };
+                }
+            }
             return;
         }
         if hide {
@@ -1745,17 +1883,21 @@ impl App {
         if !hide && st.gone && st.slide >= 1.0 {
             return; // cachée toute seule : elle reviendra par le haut de l'écran
         }
-        unsafe {
-            if hide {
-                ShowWindow(h, SW_HIDE);
+        if hide {
+            gfx::liberer();
+            island_draw::liberer_fond();
+            if self.languette_ok() {
+                self.languette_render();
             } else {
-                ShowWindow(h, SW_SHOWNOACTIVATE);
-                SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                unsafe { ShowWindow(h, SW_HIDE) };
             }
+            return;
         }
-        if !hide {
-            self.ile_render();
+        unsafe {
+            ShowWindow(h, SW_SHOWNOACTIVATE);
+            SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
+        self.ile_render();
     }
 
     fn ile_hit(&self, x: i32, y: i32) -> Option<Action> {
@@ -1782,6 +1924,14 @@ impl App {
 
     fn ile_click(&mut self, x: i32, y: i32, dbl: bool) {
         let Some(st) = &self.ile else { return };
+        if st.gone || st.hidden {
+            // clic sur la languette : l'île revient
+            if let Some(st) = &mut self.ile {
+                st.peek = st.hidden;
+            }
+            self.ile_wake();
+            return;
+        }
         let open = st.want || self.cfg.ile.always_open || st.typing;
         if !open && self.ring.is_none() && st.toast.is_none() {
             // pilule fermée : clic sur l'indicateur de Jarvis = parler, ailleurs = ouvrir
@@ -2099,7 +2249,7 @@ impl App {
             }
             _ => {}
         }
-        self.ile_render();
+        self.ile_redessin();
     }
 
     // ---------- Notifications ----------
@@ -3015,7 +3165,19 @@ impl App {
                 let c = &profils::CHOIX_MODELE;
                 let k = c.iter().position(|x| x.0 == self.cfg.ia_mode).unwrap_or(0) as i32;
                 self.cfg.ia_mode = c[((k + if dir == 0 { -1 } else { 1 }).rem_euclid(c.len() as i32)) as usize].0;
+                // le choix du modèle suit le niveau : le modèle du PC = semi, un autre = complète
+                if self.cfg.ile.ia_niveau != 2 {
+                    self.cfg.ile.ia_niveau = if self.cfg.ia_mode == 2 { 1 } else { 0 };
+                }
+                if self.cfg.ia_mode != 2 {
+                    self.cfg.ia_mode_fort = self.cfg.ia_mode;
+                }
                 self.ia_change(false);
+            }
+            Action::IleN(N_IA_NIVEAU, _) => {
+                // bouton IA de la barre du haut : Complète → Semi → Coupée → Complète
+                let n = (self.cfg.ile.ia_niveau + 1) % 3;
+                self.ia_niveau(n);
             }
             Action::IleN(N_PROFIL, dir) => {
                 let ids: Vec<&str> = std::iter::once("").chain(profils::PROFILS.iter().map(|p| p.id)).collect();
@@ -3268,7 +3430,7 @@ impl App {
             }
         }
         self.mem.drag = Some((node, x as f32, y as f32, true));
-        self.ile_render();
+        self.ile_redessin();
     }
 
     /// Bouton relâché. `true` = c'était un glisser (pas un clic).
@@ -3781,7 +3943,7 @@ impl App {
     fn ile_mouse_move(&mut self) {
         let open = self.ile.as_ref().is_some_and(|s| s.want && s.view == island::View::Main) && self.cfg.ile.layout == 0;
         if open && self.data.media.is_some() {
-            self.ile_render();
+            self.ile_redessin();
         }
     }
 
@@ -3791,6 +3953,18 @@ impl App {
 
     /// Une option de l'île a changé : on applique ce qui doit l'être.
     fn ile_cfg_changed(&mut self, old: &config::IleCfg) {
+        if self.cfg.ile.ia_niveau != old.ia_niveau {
+            let n = std::mem::replace(&mut self.cfg.ile.ia_niveau, old.ia_niveau);
+            self.ia_niveau(n);
+        }
+        if self.cfg.ile.languette != old.languette {
+            self.ile_render();
+            if let Some(st) = &self.ile {
+                if !self.cfg.ile.languette && (st.hidden || (st.gone && st.slide >= 1.0)) {
+                    unsafe { ShowWindow(st.hwnd, SW_HIDE) };
+                }
+            }
+        }
         let c = self.cfg.ile.clone();
         if c.font != old.font {
             self.ile_fonts = None;
@@ -4145,7 +4319,10 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     with_app(|a| a.ile_tick());
                 }
                 T_ILE_ANIM => {
-                    with_app(|a| a.ile_anim_step());
+                    // l'appli est occupée (menu ouvert…) : la minuterie réessaie au prochain tour
+                    if with_app(|a| a.ile_frame()).is_some() {
+                        KillTimer(hwnd, T_ILE_ANIM);
+                    }
                 }
                 T_ILE_LEAVE => {
                     with_app(|a| a.ile_leave());
@@ -4229,6 +4406,15 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         }
         WM_APP_MENU => {
             show_menu();
+            return 0;
+        }
+        WM_APP_FRAME => {
+            // toujours libérer le fil des images, même si l'image ne peut pas être dessinée maintenant :
+            // sinon il n'en envoie plus jamais et l'île reste figée (grande, sans réponse)
+            sys::image_recue();
+            if with_app(|a| a.ile_frame()).is_none() {
+                SetTimer(hwnd, T_ILE_ANIM, 16, None);
+            }
             return 0;
         }
         WM_APP_ILE => {
@@ -4377,6 +4563,10 @@ unsafe extern "system" fn ile_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             return if typing || field { MA_ACTIVATE } else { MA_NOACTIVATE } as LRESULT;
         }
         WM_MOUSEMOVE => {
+            // île cachée : seule la languette est là, elle fait revenir l'île comme le haut de l'écran
+            if with_app(|a| a.ile.as_ref().is_some_and(|s| s.gone || s.hidden)).unwrap_or(false) {
+                return 0;
+            }
             let start = with_app(|a| {
                 let st = a.ile.as_mut()?;
                 let first = !st.tracking;
@@ -4477,6 +4667,7 @@ unsafe extern "system" fn win_event(_h: HWINEVENTHOOK, ev: u32, hwnd: HWND, obj:
     let main = MAIN.load(Ordering::Relaxed) as HWND;
     if !main.is_null() {
         SetTimer(main, T_VIS, 80, None);
+        sys::images_demarrer(main, WM_APP_FRAME);
     }
 }
 
@@ -4595,6 +4786,8 @@ unsafe fn run(ile: Option<bool>) {
         return;
     }
     MAIN.store(main as isize, Ordering::Relaxed);
+    // le fil des images dès le départ (sinon l'île attend un événement de fenêtre pour s'animer)
+    sys::images_demarrer(main, WM_APP_FRAME);
     let vault = Arc::new(Mutex::new(accounts::load()));
     let (jobs, rx, out) = data::spawn(main as isize, vault.clone());
     let media_tx = extra::spawn_media(out.clone());
@@ -4627,6 +4820,7 @@ unsafe fn run(ile: Option<bool>) {
         }
     }
     ia::regler_mode(cfg.ia_mode, profil_en_service(&cfg).id);
+    ia::regler_coupee(cfg.ile.ia_niveau == 2);
     cerveau::init(out.clone());
     api::spawn(out.clone(), api_port.clone());
     // téléphone Android : le port 47803 n'est ouvert que si un téléphone est déjà relié (ou pendant l'appairage)
@@ -4670,6 +4864,11 @@ unsafe fn run(ile: Option<bool>) {
         ile_last_act: None,
         ile_last_mode: island::Mode::Pill,
         fx_cur: None,
+        anim_on: false,
+        fx_vsync: false,
+        redraw: false,
+        images_on: false,
+        last_frame: std::time::Instant::now(),
         clocks: island::Clocks::default(),
         chat: island::Chat::default(),
         jarvis: island::Jarvis::default(),

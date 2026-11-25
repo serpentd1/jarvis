@@ -232,6 +232,8 @@ pub enum Msg {
     JData(String, Result<serde_json::Value, String>),
     /// Corps d'un mail (identifiant, texte ou erreur).
     MailBody(String, Result<String, String>),
+    /// Niveau de l'IA demandé à la voix : 0 complète, 1 semi, 2 coupée.
+    IaNiveau(u8),
 }
 
 /// Envoie un message à la fenêtre principale et la réveille.

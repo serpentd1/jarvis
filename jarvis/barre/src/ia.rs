@@ -318,6 +318,17 @@ pub fn mode_choisi() -> u8 {
     MODE.load(Ordering::Relaxed)
 }
 
+/// IA coupée (bouton « IA » de l'île) : plus aucune question n'est envoyée à une IA.
+static COUPEE: AtomicBool = AtomicBool::new(false);
+
+pub fn regler_coupee(oui: bool) {
+    COUPEE.store(oui, Ordering::Relaxed);
+}
+
+pub fn coupee() -> bool {
+    COUPEE.load(Ordering::Relaxed)
+}
+
 pub fn profil() -> &'static crate::profils::Profil {
     let id = PROFIL.lock().map(|p| p.clone()).unwrap_or_default();
     crate::profils::par_id(&id).unwrap_or(&crate::profils::PROFILS[2])
@@ -1194,6 +1205,9 @@ fn retenir_modele(nom: &str, m: &str) {
 /// Parle à l'IA : essaie les services allumés, dans l'ordre (le gratuit d'abord).
 /// `flux` reçoit les phrases dès qu'elles sont prêtes (seulement sans outils).
 pub fn discuter(r: &Requete, mut flux: Option<&mut dyn FnMut(&str) -> bool>) -> Result<Retour, Echec> {
+    if coupee() {
+        return Err(Echec::Autre("L'IA est coupée (bouton IA de l'île).".into()));
+    }
     let mut essayes = 0usize;
     let mut derniere = Echec::Injoignable;
     let sans_pc = sans_local();
@@ -1300,6 +1314,37 @@ fn candidat(nom: &str, genre: Genre, url: &str, gratuit: bool) -> Candidat {
     Candidat { nom: nom.into(), genre, url: url.into(), gratuit }
 }
 
+/// Débuts de clés connus (du plus précis au plus court).
+const PREFIXES_CLES: [&str; 15] = [
+    "nvapi-", "sk-ant-", "sk-or-", "sk-proj-", "sk-svcacct-", "sk-admin-", "gsk_", "AIza", "csk-", "hf_", "xai-", "pplx-", "fw_", "tgp_", "sk-",
+];
+
+/// La clé seule, même collée avec du texte autour : « Bearer nvapi-… », « NVIDIA_API_KEY=nvapi-… »,
+/// guillemets, retour à la ligne au milieu…
+fn nettoyer_cle(brut: &str) -> String {
+    let joint: String = brut.split_whitespace().collect();
+    let propre = |c: &char| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.';
+    for p in PREFIXES_CLES {
+        if let Some(i) = joint.find(p) {
+            let cle: String = joint[i..].chars().take_while(propre).collect();
+            if cle.len() >= p.len() + 8 {
+                return cle;
+            }
+        }
+    }
+    // début inconnu : le plus long morceau, sans « Bearer », « clé = », guillemets
+    let sans_bearer = brut.replace("Bearer ", " ").replace("bearer ", " ");
+    sans_bearer
+        .split(|c: char| c.is_whitespace() || matches!(c, '=' | ':' | '"' | '\'' | ','))
+        .max_by_key(|m| m.len())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn prefixe_connu(cle: &str) -> bool {
+    PREFIXES_CLES.iter().any(|p| cle.starts_with(p))
+}
+
 /// Devine les services d'une clé d'après son début. Une clé inconnue essaie plusieurs services.
 fn candidats(cle: &str) -> Vec<Candidat> {
     if cle.starts_with("sk-ant-") {
@@ -1333,6 +1378,8 @@ fn candidats(cle: &str) -> Vec<Candidat> {
         ];
     }
     vec![
+        // NVIDIA d'abord (gratuit) : vérifié par une vraie petite question, une mauvaise clé est refusée
+        candidat("NVIDIA", Genre::OpenAi, NVIDIA_URL, true),
         candidat("Mistral", Genre::OpenAi, "https://api.mistral.ai/v1", true),
         candidat("DeepSeek", Genre::OpenAi, "https://api.deepseek.com/v1", false),
         candidat("Together", Genre::OpenAi, "https://api.together.xyz/v1", false),
@@ -1361,6 +1408,15 @@ fn tester(genre: Genre, base: &str, cle: &str) -> Result<String, u16> {
             Err(_) => Err(0),
         };
     }
+    // NVIDIA donne sa liste de modèles même avec une fausse clé : on vérifie avec une toute petite question
+    if base.contains("nvidia.com") {
+        let corps = json!({"model": crate::profils::NVIDIA_RAPIDE, "messages": [{"role": "user", "content": "ok"}], "max_tokens": 1});
+        match post(&f, &format!("{base}/chat/completions"), &corps) {
+            Err(ureq::Error::Status(c, _)) if c == 401 || c == 403 => return Err(c),
+            Err(ureq::Error::Transport(_)) => return Err(0),
+            _ => {}
+        }
+    }
     match get(&f, &format!("{base}/models")) {
         Ok(r) => {
             let v: Value = r.into_json().unwrap_or(json!({}));
@@ -1374,7 +1430,7 @@ fn tester(genre: Genre, base: &str, cle: &str) -> Result<String, u16> {
 /// Ajoute un service à partir d'une clé d'API (appelée dans un thread : elle attend le réseau).
 /// `adresse` : pour une clé d'un service inconnu. Renvoie le message à afficher.
 pub fn ajouter_cle(cle: &str, adresse: &str) -> Result<String, String> {
-    let cle: String = cle.split_whitespace().collect::<String>().trim_matches(|c: char| c == '"' || c == '\'').to_string();
+    let cle = nettoyer_cle(cle);
     if cle.is_empty() {
         return Err("Colle une clé d'API dans la case.".into());
     }
@@ -1382,8 +1438,12 @@ pub fn ajouter_cle(cle: &str, adresse: &str) -> Result<String, String> {
         return Ok("Cette clé est déjà enregistrée.".into());
     }
     let adresse = adresse.trim().trim_matches(|c: char| c == '"' || c == '\'').trim_end_matches('/').to_string();
-    let perso = !adresse.is_empty();
-    let cands = if perso {
+    // une clé au début connu (nvapi-, sk-ant-…) : l'adresse saisie ne sert à rien (une vieille adresse
+    // restée dans la case faisait refuser les clés NVIDIA)
+    let perso = !adresse.is_empty() && !prefixe_connu(&cle);
+    let cands = if perso && adresse.to_lowercase().contains("nvidia.com") {
+        vec![candidat("NVIDIA", Genre::OpenAi, NVIDIA_URL, true)]
+    } else if perso {
         let genre = if adresse.to_lowercase().contains("anthropic") { Genre::Anthropic } else { Genre::OpenAi };
         vec![candidat(&domaine(&adresse), genre, &adresse, false)]
     } else {
@@ -1429,7 +1489,7 @@ pub fn ajouter_cle(cle: &str, adresse: &str) -> Result<String, String> {
     if refusee {
         Err("Cette clé est refusée : vérifie-la.".into())
     } else {
-        Err("Je ne reconnais pas cette clé. Pour un service inconnu, indique son adresse (ex. https://…/v1) dans « Adresse du service ».".into())
+        Err("Je ne reconnais pas cette clé : vérifie que tu l'as collée en entier (une clé NVIDIA commence par « nvapi- »). Pour un service vraiment inconnu, indique son adresse (ex. https://…/v1) dans « Adresse du service ».".into())
     }
 }
 
@@ -1479,6 +1539,17 @@ pub fn chercher_locaux() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cle_collee_avec_du_texte() {
+        assert_eq!(nettoyer_cle("Bearer nvapi-AbCdEf123456789"), "nvapi-AbCdEf123456789");
+        assert_eq!(nettoyer_cle("export NVIDIA_API_KEY=\"nvapi-xyz12345678_-Q\""), "nvapi-xyz12345678_-Q");
+        assert_eq!(nettoyer_cle("  nvapi-abc\n defghijkl  "), "nvapi-abcdefghijkl");
+        assert_eq!(nettoyer_cle("sk-ant-api03-abcdefghijk"), "sk-ant-api03-abcdefghijk");
+        assert_eq!(nettoyer_cle("clé : abcdef0123456789xyz"), "abcdef0123456789xyz");
+        assert!(prefixe_connu("nvapi-abc"));
+        assert_eq!(candidats("une-cle-inconnue-123456")[0].nom, "NVIDIA");
+    }
+
     fn service(nom: &str, gratuit: bool, local: bool) -> Fournisseur {
         Fournisseur { nom: nom.into(), gratuit, local, on: true, ..Default::default() }
     }
@@ -1496,9 +1567,10 @@ mod tests {
         // « sk- » sans préfixe connu : OpenAI d'abord, puis DeepSeek, puis Moonshot
         let c = candidats("sk-EXEMPLE");
         assert_eq!(c.iter().map(|x| x.nom.as_str()).collect::<Vec<_>>(), ["OpenAI", "DeepSeek", "Moonshot"]);
-        // clé inconnue : Mistral (gratuit) en premier
+        // clé inconnue : NVIDIA (gratuit, vérifié par une vraie question) en premier, puis Mistral
         let c = candidats("EXEMPLE");
-        assert_eq!(c[0].nom, "Mistral");
+        assert_eq!(c[0].nom, "NVIDIA");
+        assert_eq!(c[1].nom, "Mistral");
         assert!(c[0].gratuit && c.last().is_some_and(|x| x.nom == "Anthropic"));
     }
 

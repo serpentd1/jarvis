@@ -332,7 +332,28 @@ pub(crate) fn header(c: &mut Ctx, r: &R, w: f32) {
     if let Some(wt) = &r.d.weather {
         left = format!("{left}  /  {}", temp_txt(cf, wt.temp));
     }
-    caps(c, 22.0, 26.0, t.fg2, &left);
+    // bouton IA en premier : Complète → Semi → Coupée (au survol de cette barre, toujours, ou caché)
+    let survol = r.st.souris.is_some_and(|(_, my)| my >= c.oy && my < c.oy + 42.0 * c.s);
+    let montre = match cf.ia_bouton {
+        1 => true,
+        2 => false,
+        _ => survol,
+    };
+    let mut x0 = 22.0;
+    if montre {
+        let (nom, col) = match cf.ia_niveau {
+            1 => ("IA SEMI", ORANGE),
+            2 => ("IA COUPÉE", RED),
+            _ => ("IA", GREEN),
+        };
+        let bw = c.measure(Wt::Semibold, 10.5, nom) + 26.0;
+        c.rr(14.0, 9.0, bw, 22.0, 11.0, col.a(0.18));
+        c.circle(25.0, 20.0, 3.2, col);
+        c.text(Wt::Semibold, 10.5, 33.0, 24.0, col, nom);
+        c.hit(10.0, 5.0, bw + 8.0, 30.0, Action::IleN(N_IA_NIVEAU, 0));
+        x0 = 14.0 + bw + 10.0;
+    }
+    caps(c, x0, 26.0, t.fg2, &left);
     // les deux points du milieu = indicateur Jarvis
     let active = cf.jarvis_show && r.jarvis.online() && r.jarvis.state != "repos";
     let col = if active { jarvis_color(&r.jarvis.state) } else { WHITE.a(if r.jarvis.online() { 0.9 } else { 0.35 }) };

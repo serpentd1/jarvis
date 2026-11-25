@@ -3,7 +3,7 @@
 
 use chrono::{Datelike, NaiveDateTime, Timelike};
 use tiny_skia::{
-    BlendMode, Color, FillRule, FilterQuality, GradientStop, LinearGradient, Paint, Pattern, Pixmap, PixmapPaint, Point, SpreadMode, Stroke,
+    Color, FillRule, GradientStop, LinearGradient, Paint, Pixmap, Point, SpreadMode, Stroke,
     Transform,
 };
 
@@ -26,36 +26,47 @@ pub struct Preset {
     /// 2 chauves-souris (Halloween), 3 éclats de givre (Glace), 4 pétales (Sakura), 5 bulles (Plage),
     /// 6 étoiles et étoile filante (Galaxie), 7 grille néon (Rétro 80).
     pub deco: u8,
+    /// Fond plein, sans verre ni transparence (« Noir total »).
+    pub opaque: bool,
+    /// Boutons et cartes à angles droits, sans arrondi (« Rétro 80 »).
+    pub carre: bool,
+    /// Effet verre poli : liseré brillant sur le bord et reflet en haut (« Cristal », « Graphite »).
+    pub verre: bool,
 }
 
-pub const PRESETS: [Preset; 20] = [
-    Preset { name: "Nuit", c0: [10, 10, 12], c1: [26, 26, 32], accent: [52, 199, 89], light: false, deco: 0 },
-    Preset { name: "Verre", c0: [22, 24, 34], c1: [44, 48, 66], accent: [120, 180, 255], light: false, deco: 0 },
-    Preset { name: "Aurore", c0: [18, 12, 44], c1: [8, 74, 84], accent: [110, 240, 190], light: false, deco: 0 },
-    Preset { name: "Océan", c0: [4, 24, 54], c1: [0, 86, 130], accent: [90, 200, 250], light: false, deco: 0 },
-    Preset { name: "Forêt", c0: [10, 32, 18], c1: [38, 72, 36], accent: [150, 225, 100], light: false, deco: 0 },
-    Preset { name: "Coucher de soleil", c0: [72, 16, 52], c1: [172, 72, 30], accent: [255, 175, 70], light: false, deco: 0 },
-    Preset { name: "Bonbon", c0: [92, 30, 102], c1: [40, 62, 142], accent: [255, 130, 210], light: false, deco: 0 },
-    Preset { name: "Néon", c0: [6, 4, 14], c1: [24, 6, 38], accent: [0, 255, 210], light: false, deco: 0 },
-    Preset { name: "Clair", c0: [248, 248, 252], c1: [226, 230, 244], accent: [10, 132, 255], light: true, deco: 0 },
-    Preset { name: "Café", c0: [40, 28, 20], c1: [74, 52, 36], accent: [235, 180, 120], light: false, deco: 0 },
+pub const PRESETS: [Preset; 23] = [
+    Preset { name: "Nuit", c0: [10, 10, 12], c1: [26, 26, 32], accent: [52, 199, 89], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Verre", c0: [22, 24, 34], c1: [44, 48, 66], accent: [120, 180, 255], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Aurore", c0: [18, 12, 44], c1: [8, 74, 84], accent: [110, 240, 190], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Océan", c0: [4, 24, 54], c1: [0, 86, 130], accent: [90, 200, 250], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Forêt", c0: [10, 32, 18], c1: [38, 72, 36], accent: [150, 225, 100], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Coucher de soleil", c0: [72, 16, 52], c1: [172, 72, 30], accent: [255, 175, 70], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Bonbon", c0: [92, 30, 102], c1: [40, 62, 142], accent: [255, 130, 210], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Néon", c0: [6, 4, 14], c1: [24, 6, 38], accent: [0, 255, 210], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Clair", c0: [248, 248, 252], c1: [226, 230, 244], accent: [10, 132, 255], light: true, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Café", c0: [40, 28, 20], c1: [74, 52, 36], accent: [235, 180, 120], light: false, deco: 0, opaque: false, carre: false, verre: false },
     // 1.4 : dix thèmes de plus
-    Preset { name: "Neutre", c0: [36, 36, 38], c1: [54, 54, 58], accent: [152, 152, 160], light: false, deco: 0 },
-    Preset { name: "Pomme clair", c0: [246, 246, 248], c1: [234, 234, 239], accent: [0, 113, 227], light: true, deco: 0 },
-    Preset { name: "Pomme sombre", c0: [28, 28, 30], c1: [44, 44, 46], accent: [10, 132, 255], light: false, deco: 0 },
-    Preset { name: "Noël", c0: [110, 14, 24], c1: [14, 74, 40], accent: [255, 210, 90], light: false, deco: 1 },
-    Preset { name: "Halloween", c0: [24, 10, 34], c1: [84, 32, 6], accent: [255, 140, 20], light: false, deco: 2 },
-    Preset { name: "Glace", c0: [226, 242, 252], c1: [188, 218, 242], accent: [0, 138, 206], light: true, deco: 3 },
-    Preset { name: "Sakura", c0: [255, 232, 241], c1: [246, 200, 220], accent: [214, 64, 124], light: true, deco: 4 },
-    Preset { name: "Plage", c0: [0, 92, 124], c1: [18, 150, 158], accent: [255, 214, 110], light: false, deco: 5 },
-    Preset { name: "Galaxie", c0: [8, 6, 30], c1: [44, 16, 78], accent: [186, 146, 255], light: false, deco: 6 },
-    Preset { name: "Rétro 80", c0: [26, 6, 46], c1: [96, 12, 84], accent: [255, 64, 196], light: false, deco: 7 },
+    Preset { name: "Neutre", c0: [36, 36, 38], c1: [54, 54, 58], accent: [152, 152, 160], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Pomme clair", c0: [246, 246, 248], c1: [234, 234, 239], accent: [0, 113, 227], light: true, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Pomme sombre", c0: [28, 28, 30], c1: [44, 44, 46], accent: [10, 132, 255], light: false, deco: 0, opaque: false, carre: false, verre: false },
+    Preset { name: "Noël", c0: [110, 14, 24], c1: [14, 74, 40], accent: [255, 210, 90], light: false, deco: 1, opaque: false, carre: false, verre: false },
+    Preset { name: "Halloween", c0: [24, 10, 34], c1: [84, 32, 6], accent: [255, 140, 20], light: false, deco: 2, opaque: false, carre: false, verre: false },
+    Preset { name: "Glace", c0: [226, 242, 252], c1: [188, 218, 242], accent: [0, 138, 206], light: true, deco: 3, opaque: false, carre: false, verre: false },
+    Preset { name: "Sakura", c0: [255, 232, 241], c1: [246, 200, 220], accent: [214, 64, 124], light: true, deco: 4, opaque: false, carre: false, verre: false },
+    Preset { name: "Plage", c0: [0, 92, 124], c1: [18, 150, 158], accent: [255, 214, 110], light: false, deco: 5, opaque: false, carre: false, verre: false },
+    Preset { name: "Galaxie", c0: [8, 6, 30], c1: [44, 16, 78], accent: [186, 146, 255], light: false, deco: 6, opaque: false, carre: false, verre: false },
+    Preset { name: "Rétro 80", c0: [26, 6, 46], c1: [96, 12, 84], accent: [255, 64, 196], light: false, deco: 7, opaque: false, carre: true, verre: false },
+    // 1.5 : sombre sans transparence, et deux thèmes « verre poli »
+    Preset { name: "Noir total", c0: [0, 0, 0], c1: [10, 10, 12], accent: [120, 160, 255], light: false, deco: 0, opaque: true, carre: false, verre: false },
+    Preset { name: "Cristal", c0: [252, 252, 254], c1: [234, 238, 246], accent: [0, 122, 255], light: true, deco: 0, opaque: false, carre: false, verre: true },
+    Preset { name: "Graphite", c0: [28, 28, 31], c1: [46, 46, 52], accent: [10, 132, 255], light: false, deco: 0, opaque: false, carre: false, verre: true },
 ];
 
 /// Noms des thèmes (réglage « Thème »), dans l'ordre de PRESETS.
-pub const PRESET_NAMES: [&str; 20] = [
+pub const PRESET_NAMES: [&str; 23] = [
     "Nuit", "Verre", "Aurore", "Océan", "Forêt", "Coucher de soleil", "Bonbon", "Néon", "Clair", "Café",
     "Neutre", "Pomme clair", "Pomme sombre", "Noël", "Halloween", "Glace", "Sakura", "Plage", "Galaxie", "Rétro 80",
+    "Noir total", "Cristal", "Graphite",
 ];
 
 pub const ACCENT_NAMES: [&str; 10] = ["Celle du thème", "Celle de Jarvis", "Vert", "Bleu", "Violet", "Rose", "Orange", "Rouge", "Jaune", "Turquoise"];
@@ -232,6 +243,18 @@ pub fn fx_interval(r: &R) -> Option<u32> {
     if open && crate::island_big::anim_page(r).is_some() {
         return Some(16);
     }
+    // ce qui bouge vite ou peu de temps (onde du clic, confettis, sortie, Jarvis qui parle) : à chaque
+    // rafraîchissement de l'écran (16 ms = 60 images par seconde)
+    let vif = r.st.onde.is_some_and(|(_, _, t)| t.elapsed().as_secs_f32() < 0.5)
+        || r.st.confetti.is_some_and(|t| t.elapsed().as_secs_f32() < 4.0)
+        || (r.st.slide > 0.0 && r.st.slide < 1.0)
+        || mode == Mode::Jarvis
+        || mode == Mode::Ring
+        || (c.jarvis_show && r.jarvis.online() && r.jarvis.state != "repos")
+        || (open && r.st.view == View::Memory && r.mem.moving);
+    if vif {
+        return Some(16);
+    }
     let anim = c.rainbow
         || c.disco
         || c.pet > 0
@@ -252,9 +275,11 @@ pub fn fx_interval(r: &R) -> Option<u32> {
         || (open && r.st.view == View::Memory && r.mem.moving);
     let decor = c.deco && preset(c).deco > 0;
     if anim {
-        Some(if open && crate::island_big::is_big(r) { 80 } else if open { 33 } else { 40 })
+        // animations qui tournent en continu : 60 images par seconde dans l'île ouverte, 30 dans la
+        // grande appli et dans la pilule (avant : 12 dans la grande appli, d'où l'effet saccadé)
+        Some(if open && !crate::island_big::is_big(r) { 16 } else { 33 })
     } else if decor {
-        Some(if open { 50 } else { 70 })
+        Some(if open { 33 } else { 50 })
     } else if r.clocks.busy() || (open && c.seconds) || r.st.toast.is_some() {
         Some(250)
     } else {
@@ -486,7 +511,8 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
     }
     let (m, top) = margins(c);
     let (ww, wh) = ((gw + 2.0 * m) * s, (top + gh + m) * s);
-    let mut pm = Pixmap::new(ww.ceil().max(1.0) as u32, wh.ceil().max(1.0) as u32)?;
+    // l'image de l'image précédente est reprise si elle a la même taille (moins d'allocations)
+    let mut pm = gfx::pixmap(ww.ceil().max(1.0) as u32, wh.ceil().max(1.0) as u32)?;
     let wx = match c.position {
         1 => (12.0 * s - m * s).round() as i32,
         2 => (r.sw as f32 - ww - 12.0 * s + m * s).round() as i32,
@@ -505,15 +531,28 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
         th_.sep = th_.fg.a(0.24);
     }
     let p = preset(c);
-    let rad = if big && c.g_arrondi > 0.0 { c.g_arrondi } else { c.radius }.min(gh / 2.0) * s;
+    // thème « Rétro » : boutons et cartes à angles droits (remis à la normale à la fin du dessin)
+    struct FinCarre;
+    impl Drop for FinCarre {
+        fn drop(&mut self) {
+            gfx::carre(false);
+        }
+    }
+    gfx::carre(p.carre);
+    let _fin_carre = FinCarre;
+    let rad = if p.carre { 0.0 } else { if big && c.g_arrondi > 0.0 { c.g_arrondi } else { c.radius }.min(gh / 2.0) * s };
     let (px, py, pw, ph) = (m * s, top * s, gw * s, gh * s);
-    let path = gfx::rrect(px, py, pw, ph, rad, true)?;
-    // ombre et lueur : quelques contours de plus en plus transparents (rapide, pas de flou)
+    // masque de la forme (pour le fond et pour découper le contenu), gardé tant que la forme ne change pas
+    let masque = masque_forme(pm.width(), pm.height(), px, py, pw, ph, rad)?;
+    // ombre : des anneaux de plus en plus transparents (avant : 7 formes pleines repeintes sur toute la surface)
     if c.shadow {
-        for i in 1..=7 {
-            let e = i as f32 * 2.0 * s;
-            if let Some(sp) = gfx::rrect(px - e, py - e + 3.0 * s, pw + 2.0 * e, ph + 2.0 * e, rad + e, true) {
-                gfx::fill(&mut pm, &sp, Rgba(0.0, 0.0, 0.0, 0.045 * (1.0 - i as f32 / 8.0)));
+        let a = |i: usize| 0.045 * (1.0 - i as f32 / 8.0);
+        for i in 0..=7usize {
+            // l'opacité de toutes les anciennes formes qui recouvraient cet anneau
+            let cum = 1.0 - (i.max(1)..=7).map(|j| 1.0 - a(j)).product::<f32>();
+            let (e, l) = if i == 0 { (-2.0 * s, 4.0 * s) } else { ((2.0 * i as f32 - 1.0) * s, 2.0 * s) };
+            if let Some(sp) = gfx::rrect(px - e, py - e + 3.0 * s, pw + 2.0 * e, ph + 2.0 * e, (rad + e).max(0.0), true) {
+                gfx::stroke(&mut pm, &sp, Rgba(0.0, 0.0, 0.0, cum), l);
             }
         }
     }
@@ -526,30 +565,20 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
             }
         }
     }
-    // effacer l'intérieur (l'ombre ne doit pas assombrir le verre)
-    {
-        let mut pt = Paint::default();
-        pt.blend_mode = BlendMode::Clear;
-        pm.fill_path(&path, &pt, FillRule::Winding, Transform::identity(), None);
-    }
     // verre : fond d'écran flouté derrière
     let flou = if big { match c.g_flou { 1 => true, 2 => false, _ => c.blur } } else { c.blur };
-    if flou {
-        if let Some(b) = r.backdrop {
-            let tr = Transform::from_scale(b.scale, b.scale).post_translate(-(wx as f32), -(wy as f32));
-            let mut pt = Paint::default();
-            pt.anti_alias = true;
-            pt.shader = Pattern::new(b.pm.as_ref(), SpreadMode::Pad, FilterQuality::Bilinear, 1.0, tr);
-            pm.fill_path(&path, &pt, FillRule::Winding, Transform::identity(), None);
-        }
-    }
     let mut op = c.opacity.clamp(0.15, 1.0);
     if big {
         op = (op * (1.0 - c.g_transp.clamp(0.0, 0.8))).max(0.08);
     }
+    // thème opaque (« Noir total ») : ni verre ni transparence
+    let flou = flou && !p.opaque;
+    if p.opaque {
+        op = 1.0;
+    }
     let (mut c0, mut c1) = (Rgba::from(p.c0).a(op), Rgba::from(p.c1).a(op));
     let mut degrade = c.gradient;
-    if big && c.g_fond > 0 {
+    if big && c.g_fond > 0 && !p.opaque {
         let mix = |a: Rgba, b: Rgba, k: f32| Rgba(a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k, a.2 + (b.2 - a.2) * k, op);
         let noir = Rgba(0.0, 0.0, 0.0, 1.0);
         let (a0, a1) = (Rgba::from(p.c0), Rgba::from(p.c1));
@@ -571,13 +600,19 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
             }
         }
     }
-    if degrade {
-        gfx::grad_fill(&mut pm, &path, px, px + pw, c0, c1);
-    } else {
-        gfx::fill(&mut pm, &path, c0);
-    }
-    // reflet en haut (effet verre)
-    if flou || op < 0.95 {
+    // verre poli : un reflet blanc qui descend du haut et s'efface vers le milieu
+    let eclat = if p.verre { if p.light { 0.55 } else { 0.10 } } else { 0.0 };
+    interieur(&mut pm, &masque, if flou { r.backdrop } else { None }, (wx, wy), (px, px + pw), (c0, if degrade { c1 } else { c0 }), (py, ph, eclat));
+    if p.verre {
+        // liseré brillant à l'intérieur du bord, plus fort en haut
+        if let Some(bp) = gfx::rrect(px + 1.0 * s, py + 1.0 * s, pw - 2.0 * s, ph - 2.0 * s, (rad - 1.0 * s).max(0.0), true) {
+            gfx::stroke(&mut pm, &bp, WHITE.a(if p.light { 0.85 } else { 0.16 }), 1.0 * s);
+        }
+        if let Some(hp) = gfx::rrect(px + rad * 0.5, py + 1.0 * s, pw - rad, 1.4 * s, 0.7 * s, false) {
+            gfx::fill(&mut pm, &hp, WHITE.a(if p.light { 0.95 } else { 0.30 }));
+        }
+    } else if flou || op < 0.95 {
+        // reflet en haut (effet verre)
         if let Some(hp) = gfx::rrect(px + rad * 0.6, py + 1.0 * s, pw - rad * 1.2, 1.2 * s, 0.6 * s, false) {
             gfx::fill(&mut pm, &hp, WHITE.a(if p.light { 0.5 } else { 0.14 }));
         }
@@ -599,7 +634,7 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
     let alpha = if c.fade { alpha * alpha } else if alpha > 0.97 { 1.0 } else { 0.0 };
     let mut hits = Vec::new();
     if alpha > 0.01 {
-        let mut layer = Pixmap::new(pm.width(), pm.height())?;
+        let mut layer = gfx::calque(pm.width(), pm.height())?;
         let ox = px + (gw - tw) / 2.0 * s;
         {
             let mut cx = Ctx::new(&mut layer, r.fonts, &th_, s, ox, py);
@@ -625,22 +660,9 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
                 hits = cx.hits;
             }
         }
-        // découpe à la forme de la pilule : un masque (un « DestinationIn » ne touche pas ce qui est
-        // hors du tracé, et la neige ou les décors dépassaient)
-        let pp = PixmapPaint { opacity: alpha, ..Default::default() };
-        match tiny_skia::Mask::new(pm.width(), pm.height()) {
-            Some(mut masque) => {
-                masque.fill_path(&path, FillRule::Winding, true, Transform::identity());
-                pm.draw_pixmap(0, 0, layer.as_ref(), &pp, Transform::identity(), Some(&masque));
-            }
-            None => {
-                let mut pt = Paint::default();
-                pt.blend_mode = BlendMode::DestinationIn;
-                pt.set_color(Color::BLACK);
-                layer.fill_path(&path, &pt, FillRule::Winding, Transform::identity(), None);
-                pm.draw_pixmap(0, 0, layer.as_ref(), &pp, Transform::identity(), None);
-            }
-        }
+        // découpe à la forme de la pilule avec le masque (la neige ou les décors ne dépassent pas)
+        coller(&mut pm, &layer, &masque, alpha);
+        gfx::rendre_calque(layer);
     }
     if c.pet > 0 {
         pet(&mut pm, c.pet, px, py, pw, r.t(), s);
@@ -667,6 +689,222 @@ pub fn render(r: &R) -> Option<(Pixmap, i32, i32, Vec<Hit>)> {
         }
     }
     Some((pm, wx, wy, hits))
+}
+
+/// Petite languette en haut de l'écran quand l'île est cachée : le bas de la barre qui dépasse à peine
+/// (comme l'encoche de l'appli Coucou, en plus petit). Renvoie l'image et sa position à l'écran.
+pub fn languette(r: &R) -> Option<(Pixmap, i32, i32)> {
+    let c = r.c();
+    let s = r.dpi.max(0.5);
+    let p = preset(c);
+    let (lw, lh) = (74.0 * s, 5.0 * s);
+    // une marge presque transparente autour : plus facile à attraper avec la souris
+    let m = 8.0 * s;
+    let (ww, wh) = (lw + 2.0 * m, lh + m);
+    let mut pm = Pixmap::new(ww.ceil() as u32, wh.ceil() as u32)?;
+    pm.fill(Color::from_rgba8(0, 0, 0, 1));
+    let (zx0, zx1) = r.st.zone;
+    let centre = if zx1 > zx0 { (zx0 + zx1) as f32 / 2.0 } else { r.sw as f32 / 2.0 };
+    let wx = (centre - ww / 2.0).round() as i32;
+    // bas arrondi seulement : on dessine une pilule deux fois plus haute, dont la moitié est hors de l'image
+    let rad = if p.carre { 0.0 } else { lh };
+    let fond = Rgba::from(p.c1).a(0.94);
+    if let Some(path) = gfx::rrect(m, -lh, lw, 2.0 * lh, rad, false) {
+        gfx::fill(&mut pm, &path, fond);
+        let bord = if p.light { Rgba(0.0, 0.0, 0.0, 0.18) } else { WHITE.a(0.22) };
+        gfx::stroke(&mut pm, &path, bord, 1.0);
+    }
+    // un trait de la couleur du thème au milieu : on la repère d'un coup d'œil
+    let a = accent(r);
+    if let Some(trait_) = gfx::rrect(m + lw * 0.3, lh * 0.35, lw * 0.4, (1.4 * s).max(1.0), 0.7 * s, false) {
+        gfx::fill(&mut pm, &trait_, a.a(0.85));
+    }
+    Some((pm, wx, 0))
+}
+
+/// Masque de la forme de l'île, gardé tant que la taille et la forme ne changent pas.
+fn masque_forme(w: u32, h: u32, px: f32, py: f32, pw: f32, ph: f32, rad: f32) -> Option<tiny_skia::Mask> {
+    type Cle = (u32, u32, u32, u32, u32, u32, u32);
+    thread_local! {
+        static MASQUE: std::cell::RefCell<Option<(Cle, tiny_skia::Mask)>> = const { std::cell::RefCell::new(None) };
+    }
+    let cle: Cle = (w, h, px.to_bits(), py.to_bits(), pw.to_bits(), ph.to_bits(), rad.to_bits());
+    MASQUE.with(|m| {
+        let mut m = m.borrow_mut();
+        if let Some((k, masque)) = m.as_ref() {
+            if *k == cle {
+                return Some(masque.clone());
+            }
+        }
+        let path = gfx::rrect(px, py, pw, ph, rad, true)?;
+        let mut masque = tiny_skia::Mask::new(w, h)?;
+        masque.fill_path(&path, FillRule::Winding, true, Transform::identity());
+        *m = Some((cle, masque.clone()));
+        Some(masque)
+    })
+}
+
+/// Fond d'écran flouté agrandi à la taille de l'écran, pour les lignes du haut (là où vit l'île).
+/// Calculé une seule fois (et complété quand l'île grandit) au lieu d'être ré-agrandi à chaque image.
+struct FondAgrandi {
+    /// Identité du fond réduit (sa version et sa taille).
+    id: (u64, u32, u32),
+    w: usize,
+    lignes: usize,
+    px: Vec<u8>,
+}
+
+thread_local! {
+    static FOND: std::cell::RefCell<Option<FondAgrandi>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Oublie le fond agrandi (île cachée : on rend la mémoire).
+pub fn liberer_fond() {
+    FOND.with(|f| *f.borrow_mut() = None);
+}
+
+/// Les `lignes` premières lignes de l'écran, en pixels RGBA, à partir du fond réduit (lissage bilinéaire).
+fn fond_lignes<T>(b: &Backdrop, sw: usize, lignes: usize, f: impl FnOnce(&FondAgrandi) -> T) -> T {
+    FOND.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let id = (b.version, b.pm.width(), b.pm.height());
+        if cell.as_ref().is_some_and(|x| x.id != id || x.w != sw) {
+            *cell = None;
+        }
+        let fa = cell.get_or_insert_with(|| FondAgrandi { id, w: sw, lignes: 0, px: Vec::new() });
+        if fa.lignes < lignes {
+            // par paquets de 128 lignes, pour ne pas recalculer à chaque image pendant que l'île grandit
+            let fin = lignes.div_ceil(128) * 128;
+            let (bw, bh) = (b.pm.width() as usize, b.pm.height() as usize);
+            let src = b.pm.data();
+            let k = 1.0 / b.scale.max(0.01);
+            fa.px.resize(sw * fin * 4, 0);
+            let colonnes: Vec<(usize, usize, f32)> = (0..sw)
+                .map(|x| {
+                    let u = ((x as f32 + 0.5) * k - 0.5).clamp(0.0, (bw - 1) as f32);
+                    let u0 = u.floor() as usize;
+                    (u0, (u0 + 1).min(bw - 1), u - u0 as f32)
+                })
+                .collect();
+            for y in fa.lignes..fin {
+                let v = ((y as f32 + 0.5) * k - 0.5).clamp(0.0, (bh - 1) as f32);
+                let v0 = v.floor() as usize;
+                let (v1, fv) = ((v0 + 1).min(bh - 1), v - v0 as f32);
+                let (l0, l1) = (v0 * bw * 4, v1 * bw * 4);
+                let ligne = y * sw * 4;
+                for (x, &(u0, u1, fu)) in colonnes.iter().enumerate() {
+                    let o = ligne + x * 4;
+                    for c in 0..4 {
+                        let a = src[l0 + u0 * 4 + c] as f32 * (1.0 - fu) + src[l0 + u1 * 4 + c] as f32 * fu;
+                        let bb = src[l1 + u0 * 4 + c] as f32 * (1.0 - fu) + src[l1 + u1 * 4 + c] as f32 * fu;
+                        fa.px[o + c] = (a * (1.0 - fv) + bb * fv + 0.5) as u8;
+                    }
+                }
+            }
+            fa.lignes = fin;
+        }
+        f(fa)
+    })
+}
+
+/// Remplit l'intérieur de la forme : fond d'écran flouté (si `bd`), puis la teinte (dégradé de `x.0` à `x.1`),
+/// avec un bord adouci selon le masque. Fait à la main, ligne par ligne : bien plus rapide qu'un motif tiny-skia.
+/// `haut` = (haut de la forme, sa hauteur, opacité du reflet blanc qui descend du haut ; 0 = aucun).
+fn interieur(pm: &mut Pixmap, masque: &tiny_skia::Mask, bd: Option<&Backdrop>, win: (i32, i32), x: (f32, f32), cols: (Rgba, Rgba), haut: (f32, f32, f32)) {
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
+    // couleur de la teinte pour chaque colonne (alpha prémultiplié, 0 à 255)
+    let teinte: Vec<[f32; 4]> = (0..w)
+        .map(|i| {
+            let t = if (x.1 - x.0).abs() < 0.5 { 0.0 } else { ((i as f32 + 0.5 - x.0) / (x.1 - x.0)).clamp(0.0, 1.0) };
+            let c = cols.0.mix(cols.1, t);
+            let a = c.3.clamp(0.0, 1.0);
+            [c.0 * a * 255.0, c.1 * a * 255.0, c.2 * a * 255.0, a * 255.0]
+        })
+        .collect();
+    let m = masque.data();
+    let mut remplir = |fond: Option<&FondAgrandi>| {
+        let d = pm.data_mut();
+        for y in 0..h {
+            let sy = win.1 + y as i32;
+            let ligne_fond = fond.map(|f| (sy.clamp(0, f.lignes as i32 - 1) as usize) * f.w * 4);
+            let reflet = if haut.2 > 0.0 {
+                let k = (1.0 - (y as f32 + 0.5 - haut.0) / (0.55 * haut.1.max(1.0))).clamp(0.0, 1.0);
+                haut.2 * k * k
+            } else {
+                0.0
+            };
+            for xx in 0..w {
+                let mv = m[y * w + xx];
+                if mv == 0 {
+                    continue;
+                }
+                let t = &teinte[xx];
+                let inv = 1.0 - t[3] / 255.0;
+                let (mut r, mut g, mut b, mut a) = (t[0], t[1], t[2], t[3]);
+                if let (Some(f), Some(l)) = (fond, ligne_fond) {
+                    let sx = (win.0 + xx as i32).clamp(0, f.w as i32 - 1) as usize;
+                    let o = l + sx * 4;
+                    r += f.px[o] as f32 * inv;
+                    g += f.px[o + 1] as f32 * inv;
+                    b += f.px[o + 2] as f32 * inv;
+                    a += f.px[o + 3] as f32 * inv;
+                }
+                if reflet > 0.0 {
+                    let q = 1.0 - reflet;
+                    let blanc = 255.0 * reflet;
+                    (r, g, b, a) = (blanc + r * q, blanc + g * q, blanc + b * q, blanc + a * q);
+                }
+                let i = (y * w + xx) * 4;
+                if mv == 255 {
+                    d[i] = (r + 0.5).min(255.0) as u8;
+                    d[i + 1] = (g + 0.5).min(255.0) as u8;
+                    d[i + 2] = (b + 0.5).min(255.0) as u8;
+                    d[i + 3] = (a + 0.5).min(255.0) as u8;
+                } else {
+                    let k = mv as f32 / 255.0;
+                    let q = 1.0 - k;
+                    d[i] = (r * k + d[i] as f32 * q + 0.5).min(255.0) as u8;
+                    d[i + 1] = (g * k + d[i + 1] as f32 * q + 0.5).min(255.0) as u8;
+                    d[i + 2] = (b * k + d[i + 2] as f32 * q + 0.5).min(255.0) as u8;
+                    d[i + 3] = (a * k + d[i + 3] as f32 * q + 0.5).min(255.0) as u8;
+                }
+            }
+        }
+    };
+    match bd {
+        Some(b) => {
+            let sw = (b.pm.width() as f32 * b.scale).round().max(1.0) as usize;
+            let lignes = (win.1 + h as i32).max(1) as usize;
+            fond_lignes(b, sw, lignes, |f| remplir(Some(f)));
+        }
+        None => remplir(None),
+    }
+}
+
+/// Colle le calque du contenu sur l'île, découpé par le masque, avec l'opacité `alpha`.
+fn coller(pm: &mut Pixmap, layer: &Pixmap, masque: &tiny_skia::Mask, alpha: f32) {
+    let d = pm.data_mut();
+    let s = layer.data();
+    let m = masque.data();
+    for (i, &mv) in m.iter().enumerate() {
+        if mv == 0 {
+            continue;
+        }
+        let o = i * 4;
+        let sa = s[o + 3];
+        if sa == 0 {
+            continue;
+        }
+        let k = alpha * mv as f32 / 255.0;
+        if k >= 0.999 && sa == 255 {
+            d[o..o + 4].copy_from_slice(&s[o..o + 4]);
+            continue;
+        }
+        let inv = 1.0 - sa as f32 / 255.0 * k;
+        for c in 0..4 {
+            d[o + c] = (s[o + c] as f32 * k + d[o + c] as f32 * inv + 0.5).min(255.0) as u8;
+        }
+    }
 }
 
 /// Lueur douce autour du bouton survolé.

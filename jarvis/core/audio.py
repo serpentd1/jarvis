@@ -4,6 +4,7 @@ Avec l'anti-écho (core/sortie.py), la voix de Jarvis est retirée du son du mic
 La fin de ta phrase est trouvée par le détecteur de voix Silero (core/vad.py), plus le volume."""
 import logging
 import queue
+import re
 import time
 from collections import deque
 
@@ -28,12 +29,74 @@ def trouver_micro(nom: str):
     return None
 
 
+def micros_windows():
+    """Les noms des micros que Windows voit EN CE MOMENT (PortAudio, lui, garde la liste de son démarrage).
+    Coupés à 31 lettres, comme dans la liste MME de PortAudio. None = impossible de savoir."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Caps(ctypes.Structure):
+            _fields_ = [("wMid", wintypes.WORD), ("wPid", wintypes.WORD), ("vDriverVersion", wintypes.UINT),
+                        ("szPname", wintypes.WCHAR * 32), ("dwFormats", wintypes.DWORD),
+                        ("wChannels", wintypes.WORD), ("wReserved1", wintypes.WORD)]
+
+        winmm = ctypes.WinDLL("winmm")
+        noms = []
+        for i in range(winmm.waveInGetNumDevs()):
+            c = Caps()
+            if winmm.waveInGetDevCapsW(ctypes.c_size_t(i), ctypes.byref(c), ctypes.sizeof(c)) == 0:
+                noms.append(c.szPname)
+        return noms
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def liste_micros(actuel: str = "", noms=None, appareils=None, apis=None) -> list:
+    """Les micros du PC pour la grande application (‹ › pour choisir) : [{"valeur": …, "titre": …}, …].
+    « Celui de Windows » d'abord. `valeur` va dans [micro] appareil (un morceau du nom, retrouvé par
+    `trouver_micro`), `titre` est le nom complet. Le micro réglé (`actuel`) est toujours dans la liste,
+    même débranché, pour qu'on voie lequel est choisi."""
+    try:
+        appareils = sd.query_devices() if appareils is None else appareils
+        apis = sd.query_hostapis() if apis is None else apis
+    except Exception:  # noqa: BLE001
+        appareils, apis = appareils or [], apis or []
+    entrees = [d for d in appareils if d.get("max_input_channels", 0) > 0]
+    complets = [str(d.get("name", "")) for d in entrees]
+    if noms is None:
+        noms = micros_windows()
+    if noms is None:                                   # pas de winmm : la liste MME de PortAudio
+        mme = {i for i, a in enumerate(apis) if str(a.get("name", "")).lower() == "mme"}
+        noms = [str(d.get("name", "")) for d in entrees if d.get("hostapi", -1) in mme
+                and not re.search(r"mapper|mappeur", str(d.get("name", "")), re.I)]
+    choix = [{"valeur": "", "titre": "Celui de Windows"}]
+    vus = set()
+    for n in noms:
+        n = str(n).strip()
+        if not n or n.lower() in vus:
+            continue
+        vus.add(n.lower())
+        # le nom MME est coupé à 31 lettres : le nom complet vient de WASAPI ou DirectSound
+        long = max((c for c in complets if c.lower().startswith(n.lower())), key=len, default=n)
+        choix.append({"valeur": n, "titre": long})
+    actuel = (actuel or "").strip()
+    if actuel:
+        a = actuel.lower()
+        trouve = next((c for c in choix[1:] if a in c["valeur"].lower() or a in c["titre"].lower()), None)
+        if trouve:
+            trouve["valeur"] = actuel                   # garde ce qui est écrit dans config.toml
+        else:
+            choix.append({"valeur": actuel, "titre": f"{actuel} (pas branché)"})
+    return choix
+
+
 class Micro:
     def __init__(self, nom_appareil: str = "", anti_echo=None):
         from .vad import Silero
         self.nom_appareil = nom_appareil           # gardé pour le retrouver si la liste des appareils change
         self.appareil = trouver_micro(nom_appareil)
-        self.anti_echo = anti_echo
+        self.anti_echo = self._anti_echo_voulu = anti_echo
         self.vad = Silero()
         self.file = queue.Queue()
         self.voulu = False                  # le micro doit être ouvert (sert à le rouvrir s'il se bloque)
@@ -42,6 +105,10 @@ class Micro:
         self.bruit = deque(maxlen=25)  # niveau sonore des 2 dernières secondes
         # les 15 dernières secondes du micro, avant et après l'anti-écho (pour « enregistrer_derniere_phrase »)
         self.histo_brut, self.histo_propre = deque(maxlen=200), deque(maxlen=200)
+        self._ouvrir_flux()
+
+    def _ouvrir_flux(self):
+        """Ouvre le flux de `self.appareil` : en 16 kHz si possible, sinon à sa fréquence (rééchantillonnée)."""
         try:
             self.freq_source = FREQ
             self.flux = sd.InputStream(samplerate=FREQ, channels=1, dtype="int16",
@@ -51,9 +118,28 @@ class Micro:
             self.flux = sd.InputStream(samplerate=self.freq_source, channels=1, dtype="int16",
                                        device=self.appareil, callback=self._recu)
         nom = sd.query_devices(self.flux.device)["name"]
-        if self.freq_source != FREQ:
-            self.anti_echo = None                   # l'anti-écho travaille en 16 kHz
+        # l'anti-écho travaille en 16 kHz
+        self.anti_echo = getattr(self, "_anti_echo_voulu", self.anti_echo) if self.freq_source == FREQ else None
         print(f"[micro] {nom} ({self.freq_source} Hz){' + anti-écho' if self.anti_echo else ''}")
+
+    def changer(self, nom: str):
+        """Passe sur un autre micro (`nom` : un morceau de son nom, vide = celui de Windows) sans redémarrer
+        Jarvis. S'il ne s'ouvre pas, Jarvis reprend le micro de Windows."""
+        actif = bool(self.flux is not None and self.flux.active)
+        self.fermer_flux()
+        self.vider()
+        self.nom_appareil = nom
+        self.appareil = trouver_micro(nom)
+        try:
+            self._ouvrir_flux()
+        except Exception:  # noqa: BLE001
+            log.exception("Le micro « %s » ne s'ouvre pas : je reprends celui de Windows", nom)
+            self.appareil = None
+            self._ouvrir_flux()
+        self._dernier_recu = time.perf_counter()
+        if actif:
+            self.flux.start()
+        log.info("Micro changé : %s", sd.query_devices(self.flux.device)["name"])
 
     def _recu(self, donnees, _frames, _temps, statut):
         self._dernier_recu = time.perf_counter()

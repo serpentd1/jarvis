@@ -130,7 +130,37 @@ pub const FONT_NAMES: [&str; 9] = ["Segoe UI", "Bahnschrift", "Comic Sans", "Con
 
 pub struct Fonts {
     f: Vec<FontVec>,
+    /// Numéro unique de ce jeu de polices (clé du cache des lettres).
+    id: u32,
 }
+
+/// Numéro du prochain jeu de polices chargé.
+static FONTS_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+fn fonts_id() -> u32 {
+    FONTS_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Une lettre déjà dessinée : décalage de son coin par rapport au point d'origine arrondi,
+/// taille et couverture (0 à 255, gamma déjà appliqué).
+struct Glyphe {
+    dx: i32,
+    dy: i32,
+    w: i32,
+    h: i32,
+    cov: Vec<u8>,
+}
+
+/// Clé du cache : (polices, graisse, lettre, taille, décalage au quart de pixel, gamma).
+type CleGlyphe = (u32, u8, u16, u32, u8, u32);
+
+thread_local! {
+    /// Lettres déjà dessinées : on ne recalcule plus leurs courbes à chaque image (le plus lent du dessin).
+    static GLYPHES: std::cell::RefCell<std::collections::HashMap<CleGlyphe, Glyphe>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Au-delà, on vide le cache (environ 1 à 2 Mo au plus).
+const GLYPHES_MAX: usize = 6000;
 
 impl Fonts {
     pub fn load() -> Option<Fonts> {
@@ -146,6 +176,7 @@ impl Fonts {
                 pick(&["segoeui.ttf", "arial.ttf"])?,
                 pick(&["seguisb.ttf", "segoeuib.ttf", "arialbd.ttf", "arial.ttf"])?,
             ],
+            id: fonts_id(),
         })
     }
 
@@ -171,7 +202,7 @@ impl Fonts {
                 f[k] = v;
             }
         }
-        Some(Fonts { f })
+        Some(Fonts { f, id: fonts_id() })
     }
 
     /// Police d'icônes de Windows 11 (Segoe Fluent Icons), sinon Segoe MDL2 Assets. None = absente.
@@ -181,7 +212,7 @@ impl Fonts {
             let dir = std::path::PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into())).join("Fonts");
             let b = ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|n| std::fs::read(dir.join(n)).ok())?;
             let mk = || FontVec::try_from_vec(b.clone()).ok();
-            Some(Fonts { f: vec![mk()?, mk()?, mk()?] })
+            Some(Fonts { f: vec![mk()?, mk()?, mk()?], id: fonts_id() })
         })
         .as_ref()
     }
@@ -212,6 +243,7 @@ impl Fonts {
     }
 
     /// Dessine le texte ; (x, y) = début de la ligne de base. Renvoie la largeur.
+    /// Chaque lettre est calculée une seule fois (au quart de pixel près), puis reprise du cache.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(&self, pm: &mut Pixmap, w: Wt, size: f32, x: f32, y: f32, c: Rgba, s: &str, track: f32, gamma: f32) -> f32 {
         let font = &self.f[w as usize];
@@ -219,38 +251,81 @@ impl Fonts {
         let sf = font.as_scaled(scale);
         let (pw, ph) = (pm.width() as i32, pm.height() as i32);
         let data = pm.data_mut();
+        let (cr, cg, cb, ca) = (c.0 * 255.0, c.1 * 255.0, c.2 * 255.0, c.3);
         let mut cx = x;
         let mut prev = None;
         let mut n = 0;
-        for ch in s.chars() {
-            let id = font.glyph_id(ch);
-            if let Some(p) = prev {
-                cx += sf.kern(p, id);
-            }
-            let g = id.with_scale_and_position(scale, point(cx, y));
-            cx += sf.h_advance(id) + track;
-            prev = Some(id);
-            n += 1;
-            let Some(og) = font.outline_glyph(g) else { continue };
-            let b = og.px_bounds();
-            let (bx, by) = (b.min.x as i32, b.min.y as i32);
-            og.draw(|gx, gy, cov| {
-                let (px, py) = (bx + gx as i32, by + gy as i32);
-                if px < 0 || py < 0 || px >= pw || py >= ph {
-                    return;
-                }
-                let a = c.3 * cov.clamp(0.0, 1.0).powf(gamma);
-                if a <= 0.002 {
-                    return;
-                }
-                let i = ((py * pw + px) * 4) as usize;
-                let inv = 1.0 - a;
-                data[i] = (c.0 * a * 255.0 + data[i] as f32 * inv + 0.5).min(255.0) as u8;
-                data[i + 1] = (c.1 * a * 255.0 + data[i + 1] as f32 * inv + 0.5).min(255.0) as u8;
-                data[i + 2] = (c.2 * a * 255.0 + data[i + 2] as f32 * inv + 0.5).min(255.0) as u8;
-                data[i + 3] = (a * 255.0 + data[i + 3] as f32 * inv + 0.5).min(255.0) as u8;
-            });
+        // origine verticale arrondie au quart de pixel (la même pour toute la ligne)
+        let mut oy = y.floor();
+        let mut fy = ((y - oy) * 4.0).round() as i32;
+        if fy >= 4 {
+            oy += 1.0;
+            fy = 0;
         }
+        GLYPHES.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() > GLYPHES_MAX {
+                cache.clear();
+            }
+            for ch in s.chars() {
+                let id = font.glyph_id(ch);
+                if let Some(p) = prev {
+                    cx += sf.kern(p, id);
+                }
+                let gx0 = cx;
+                cx += sf.h_advance(id) + track;
+                prev = Some(id);
+                n += 1;
+                let mut ox = gx0.floor();
+                let mut fx = ((gx0 - ox) * 4.0).round() as i32;
+                if fx >= 4 {
+                    ox += 1.0;
+                    fx = 0;
+                }
+                let key: CleGlyphe = (self.id, w as u8, id.0, scale.x.to_bits(), (fx * 4 + fy) as u8, gamma.to_bits());
+                let g = cache.entry(key).or_insert_with(|| {
+                    let gl = id.with_scale_and_position(scale, point(fx as f32 / 4.0, fy as f32 / 4.0));
+                    let Some(og) = font.outline_glyph(gl) else { return Glyphe { dx: 0, dy: 0, w: 0, h: 0, cov: Vec::new() } };
+                    let b = og.px_bounds();
+                    let (gw, gh) = (b.width().ceil().max(0.0) as i32, b.height().ceil().max(0.0) as i32);
+                    let mut cov = vec![0u8; (gw * gh).max(0) as usize];
+                    og.draw(|gx, gy, v| {
+                        let (gx, gy) = (gx as i32, gy as i32);
+                        if gx < gw && gy < gh {
+                            cov[(gy * gw + gx) as usize] = (v.clamp(0.0, 1.0).powf(gamma) * 255.0 + 0.5) as u8;
+                        }
+                    });
+                    Glyphe { dx: b.min.x as i32, dy: b.min.y as i32, w: gw, h: gh, cov }
+                });
+                if g.w == 0 {
+                    continue;
+                }
+                let (bx, by) = (ox as i32 + g.dx, oy as i32 + g.dy);
+                // partie visible de la lettre
+                let (x0, y0) = ((-bx).max(0), (-by).max(0));
+                let (x1, y1) = ((pw - bx).min(g.w), (ph - by).min(g.h));
+                for gy in y0..y1 {
+                    let row = ((by + gy) * pw + bx) as usize * 4;
+                    let crow = (gy * g.w) as usize;
+                    for gx in x0..x1 {
+                        let v = g.cov[crow + gx as usize];
+                        if v == 0 {
+                            continue;
+                        }
+                        let a = ca * v as f32 * (1.0 / 255.0);
+                        if a <= 0.002 {
+                            continue;
+                        }
+                        let i = row + gx as usize * 4;
+                        let inv = 1.0 - a;
+                        data[i] = (cr * a + data[i] as f32 * inv + 0.5).min(255.0) as u8;
+                        data[i + 1] = (cg * a + data[i + 1] as f32 * inv + 0.5).min(255.0) as u8;
+                        data[i + 2] = (cb * a + data[i + 2] as f32 * inv + 0.5).min(255.0) as u8;
+                        data[i + 3] = (a * 255.0 + data[i + 3] as f32 * inv + 0.5).min(255.0) as u8;
+                    }
+                }
+            }
+        });
         if n > 0 { cx - track - x } else { 0.0 }
     }
 
@@ -273,10 +348,20 @@ impl Fonts {
 
 // ---------- Formes ----------
 
+thread_local! {
+    /// Thème « Rétro » : tous les rectangles arrondis deviennent des rectangles à angles droits.
+    static CARRE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Angles droits partout (true) pendant le dessin de l'île, ou arrondis normaux (false).
+pub fn carre(oui: bool) {
+    CARRE.with(|c| c.set(oui));
+}
+
 /// Rectangle arrondi ; `cont` = coins « continus » façon iPhone (courbure progressive).
 pub fn rrect(x: f32, y: f32, w: f32, h: f32, r: f32, cont: bool) -> Option<Path> {
     let mut pb = PathBuilder::new();
-    let r = r.max(0.0);
+    let r = if CARRE.with(|c| c.get()) { 0.0 } else { r.max(0.0) };
     if r < 0.5 {
         pb.push_rect(Rect::from_xywh(x, y, w, h)?);
         return pb.finish();
@@ -640,27 +725,130 @@ pub fn bmi32(w: i32, h: i32) -> BITMAPINFO {
 
 pub fn rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
     for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-        d[0] = s[2];
-        d[1] = s[1];
-        d[2] = s[0];
-        d[3] = s[3];
+        let v = u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+        let w = (v & 0xFF00_FF00) | ((v & 0xFF) << 16) | ((v >> 16) & 0xFF);
+        d.copy_from_slice(&w.to_le_bytes());
     }
+}
+
+/// Image Windows gardée d'une image à l'autre (avant : créée puis détruite à chaque image).
+/// Plus grande que nécessaire (arrondie à 64 px) pour ne pas la refaire pendant que l'île grandit.
+struct Surface {
+    dc: HDC,
+    bmp: HBITMAP,
+    old: HGDIOBJ,
+    bits: *mut u8,
+    w: i32,
+    h: i32,
+}
+
+thread_local! {
+    static SURFACE: std::cell::RefCell<Option<Surface>> = const { std::cell::RefCell::new(None) };
+    /// Dernière image rendue, reprise pour la suivante si elle a la même taille (pas de nouvelle allocation).
+    static RESERVE: std::cell::RefCell<Option<Pixmap>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Une image vide de cette taille : celle de la réserve si elle convient, sinon une neuve.
+/// Son contenu n'est pas effacé : l'appelant la remplit entièrement.
+pub fn pixmap(w: u32, h: u32) -> Option<Pixmap> {
+    let pris = RESERVE.with(|r| r.borrow_mut().take());
+    match pris {
+        Some(pm) if pm.width() == w && pm.height() == h => Some(pm),
+        _ => Pixmap::new(w, h),
+    }
+}
+
+/// Rend une image à la réserve (pour la prochaine image de même taille).
+pub fn rendre(pm: Pixmap) {
+    RESERVE.with(|r| *r.borrow_mut() = Some(pm));
+}
+
+thread_local! {
+    /// Calques transparents déjà alloués (contenu de l'île, animation de page), repris d'une image à l'autre.
+    static CALQUES: std::cell::RefCell<Vec<Pixmap>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Un calque transparent de cette taille (repris de la réserve s'il y en a un, effacé).
+pub fn calque(w: u32, h: u32) -> Option<Pixmap> {
+    let pris = CALQUES.with(|c| {
+        let mut c = c.borrow_mut();
+        let i = c.iter().position(|p| p.width() == w && p.height() == h)?;
+        Some(c.swap_remove(i))
+    });
+    match pris {
+        Some(mut pm) => {
+            pm.data_mut().fill(0);
+            Some(pm)
+        }
+        None => Pixmap::new(w, h),
+    }
+}
+
+/// Rend un calque à la réserve (deux au plus).
+pub fn rendre_calque(pm: Pixmap) {
+    CALQUES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 2 {
+            c.remove(0);
+        }
+        c.push(pm);
+    });
+}
+
+/// Libère l'image Windows et la réserve (île cachée : on rend la mémoire).
+pub fn liberer() {
+    CALQUES.with(|c| c.borrow_mut().clear());
+    SURFACE.with(|s| {
+        if let Some(sf) = s.borrow_mut().take() {
+            unsafe {
+                SelectObject(sf.dc, sf.old);
+                DeleteObject(sf.bmp);
+                DeleteDC(sf.dc);
+            }
+        }
+    });
+    RESERVE.with(|r| *r.borrow_mut() = None);
 }
 
 /// Affiche l'image (alpha prémultiplié) dans une fenêtre « layered », à la position (x, y).
 pub unsafe fn present(hwnd: HWND, pm: &Pixmap, x: i32, y: i32) {
     let (w, h) = (pm.width() as i32, pm.height() as i32);
+    if w <= 0 || h <= 0 {
+        return;
+    }
     let screen = GetDC(null_mut());
-    let mem = CreateCompatibleDC(screen);
-    let bmi = bmi32(w, h);
-    let mut bits: *mut core::ffi::c_void = null_mut();
-    let bmp = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-    if !bmp.is_null() && !bits.is_null() {
-        let dst = std::slice::from_raw_parts_mut(bits as *mut u8, (w * h * 4) as usize);
-        rgba_to_bgra(pm.data(), dst);
-        let old = SelectObject(mem, bmp);
+    SURFACE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let trop_petite = cell.as_ref().is_none_or(|s| s.w < w || s.h < h);
+        // trop petite, ou beaucoup trop grande (l'île s'est refermée) : on la refait à la bonne taille
+        let trop_grande = cell.as_ref().is_some_and(|s| s.w * s.h > (w + 64) * (h + 64) * 4);
+        if trop_petite || trop_grande {
+            if let Some(sf) = cell.take() {
+                SelectObject(sf.dc, sf.old);
+                DeleteObject(sf.bmp);
+                DeleteDC(sf.dc);
+            }
+            let (cw, ch) = ((w + 63) / 64 * 64, (h + 63) / 64 * 64);
+            let bmi = bmi32(cw, ch);
+            let mut bits: *mut core::ffi::c_void = null_mut();
+            let bmp = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            if bmp.is_null() || bits.is_null() {
+                return;
+            }
+            let dc = CreateCompatibleDC(screen);
+            let old = SelectObject(dc, bmp);
+            *cell = Some(Surface { dc, bmp, old, bits: bits as *mut u8, w: cw, h: ch });
+        }
+        let Some(sf) = cell.as_ref() else { return };
+        let src = pm.data();
+        let ligne = (w * 4) as usize;
+        let pas = (sf.w * 4) as usize;
+        let dst = std::slice::from_raw_parts_mut(sf.bits, pas * sf.h as usize);
+        for row in 0..h as usize {
+            rgba_to_bgra(&src[row * ligne..(row + 1) * ligne], &mut dst[row * pas..row * pas + ligne]);
+        }
         let size = SIZE { cx: w, cy: h };
-        let src = POINT { x: 0, y: 0 };
+        let srcp = POINT { x: 0, y: 0 };
         let dstp = POINT { x, y };
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
@@ -668,11 +856,8 @@ pub unsafe fn present(hwnd: HWND, pm: &Pixmap, x: i32, y: i32) {
             SourceConstantAlpha: 255,
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
-        UpdateLayeredWindow(hwnd, screen, &dstp, &size, mem, &src, 0, &blend, ULW_ALPHA);
-        SelectObject(mem, old);
-        DeleteObject(bmp);
-    }
-    DeleteDC(mem);
+        UpdateLayeredWindow(hwnd, screen, &dstp, &size, sf.dc, &srcp, 0, &blend, ULW_ALPHA);
+    });
     ReleaseDC(null_mut(), screen);
 }
 

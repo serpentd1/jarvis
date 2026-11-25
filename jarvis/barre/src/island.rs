@@ -142,6 +142,8 @@ pub const N_PRINTER: u8 = 52;
 /// Jarvis et voix : 0 couper / allumer la voix, 1 voix au démarrage, 2 arrêter LM Studio en quittant,
 /// 3 ne pas réveiller l'IA du PC avec une clé, 4 tout éteindre.
 pub const N_POWER: u8 = 53;
+/// Bouton IA de la barre du haut : Complète → Semi → Coupée.
+pub const N_IA_NIVEAU: u8 = 54;
 
 /// Ce que vise le champ de saisie de l'île.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -928,6 +930,12 @@ pub struct Island {
     pub edge_since: Option<Instant>,
     /// Montrée par la souris en haut de l'écran alors qu'une fenêtre agrandie la cache.
     pub peek: bool,
+    /// Cachée par une appli en plein écran (jeu, vidéo) : pas de languette.
+    pub plein_ecran: bool,
+    /// Souris sur la barre du haut de l'île ouverte (le bouton IA apparaît).
+    pub haut: bool,
+    /// Échelle du dernier dessin (pixels par point), pour le survol sans tout recalculer.
+    pub echelle: f32,
 }
 
 impl Island {
@@ -964,6 +972,9 @@ impl Island {
             zone: (0, 0),
             edge_since: None,
             peek: false,
+            plein_ecran: false,
+            haut: false,
+            echelle: 1.0,
         }
     }
 

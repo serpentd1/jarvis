@@ -18,7 +18,7 @@ REGLAGES = [
     ("micro", "conversation", "nombre", "Écoute après sa réponse (secondes, 0 = non)"),
     ("micro", "silence_fin", "nombre", "Silence qui termine ta phrase (secondes)"),
     ("micro", "ding", "booleen", "Petit « ding » quand il écoute"),
-    ("micro", "appareil", "texte", "Micro de Jarvis (morceau du nom, ex. WO Mic ; vide = Windows)"),
+    ("micro", "appareil", "choix", "Micro de Jarvis"),
     ("voix", "sortie", "texte", "Sortie du son de Jarvis (morceau du nom, ex. JBL ; vide = Windows)"),
     ("conversation", "delai_sortie_ms", "nombre", "Retard de l'enceinte pour l'anti-écho (ms, 0 = automatique)"),
     ("voix", "lenteur", "nombre", "Lenteur de la voix (1 = normal)"),
@@ -115,6 +115,13 @@ def installer(ctx, reg):
                     threading.Thread(target=ctx.changer_transcription, args=(cible, True), daemon=True).start()
             elif p.get("cle") == "demarrage_windows":
                 demarrage.activer(bool(p.get("valeur")))
+            elif (p.get("section"), p.get("cle")) == ("micro", "appareil"):
+                nom = str(p.get("valeur") or "")
+                config.ecrire_valeur("micro", "appareil", nom)
+                if hasattr(ctx, "changer_micro"):
+                    ctx.changer_micro(nom)                # tout de suite, sans redémarrer Jarvis
+                    return {"ok": True}
+                return {"ok": True, "redemarrer": True}
             else:
                 r = next((r for r in REGLAGES if r[0] == p.get("section") and r[1] == p.get("cle")), None)
                 if not r and (p.get("section"), p.get("cle")) in CACHES:
@@ -130,10 +137,16 @@ def installer(ctx, reg):
         except Exception:  # noqa: BLE001
             modeles = []
         modeles = modeles or [cfg["cerveau"]["modele"]]
+        choix = dict(CHOIX)
+        try:
+            from core.audio import liste_micros
+            choix[("micro", "appareil")] = liste_micros(str(cfg["micro"]["appareil"] or ""))
+        except Exception:  # noqa: BLE001
+            choix[("micro", "appareil")] = [{"valeur": "", "titre": "Celui de Windows"}]
         return {"ok": True, "voix": {"actuelle": ctx.voix_actuelle() if hasattr(ctx, "voix_actuelle") else None,
                                      "liste": [{"nom": n, "titre": v["titre"]} for n, v in CATALOGUE.items()]},
                 "modeles": modeles, "demarrage_windows": demarrage.est_active(),
                 "reglages": [{"section": s, "cle": c, "type": t, "libelle": l, "valeur": cfg[s][c],
-                              **({"choix": CHOIX[(s, c)]} if (s, c) in CHOIX else {})} for s, c, t, l in REGLAGES]}
+                              **({"choix": choix[(s, c)]} if (s, c) in choix else {})} for s, c, t, l in REGLAGES]}
 
     reg.api("parametres", api)

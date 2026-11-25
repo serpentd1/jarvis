@@ -70,6 +70,46 @@ def test_sortie_introuvable_ou_vide():
     assert sortie.trouver_sortie("JBL", seulement_wdm, APIS) is None
 
 
+# ── la liste des micros de la grande application ──────────────
+
+MICROS = [
+    appareil("Mappeur de sons Microsoft - Input", 0, 0, 2),
+    appareil("Microphone (Razer Seiren Mini U", 0, 0, 1),           # 1 : MME coupe les noms à 31 lettres
+    appareil("Microphone (WO Mic Device)", 0, 0, 1),                # 2
+    appareil("Haut-parleurs (JBL Flip Essenti", 0),
+    appareil("Microphone (Razer Seiren Mini USB)", 1, 0, 1),        # DirectSound
+    appareil("Microphone (Razer Seiren Mini USB)", 2, 0, 1),        # WASAPI
+]
+NOMS_WINDOWS = ["Microphone (Razer Seiren Mini U", "Microphone (WO Mic Device)"]
+
+
+def test_liste_micros_noms_complets(monkeypatch):
+    from core import audio
+    liste = audio.liste_micros("", NOMS_WINDOWS, MICROS, APIS)
+    assert liste == [{"valeur": "", "titre": "Celui de Windows"},
+                     {"valeur": "Microphone (Razer Seiren Mini U", "titre": "Microphone (Razer Seiren Mini USB)"},
+                     {"valeur": "Microphone (WO Mic Device)", "titre": "Microphone (WO Mic Device)"}]
+    # la valeur choisie retrouve le micro MME, comme avant
+    monkeypatch.setattr(audio.sd, "query_devices", lambda *a: MICROS)
+    assert audio.trouver_micro(liste[1]["valeur"]) == 1
+    assert audio.trouver_micro(liste[2]["valeur"]) == 2
+
+
+def test_liste_micros_sans_winmm(monkeypatch):
+    from core import audio
+    monkeypatch.setattr(audio, "micros_windows", lambda: None)
+    valeurs = [c["valeur"] for c in audio.liste_micros("", None, MICROS, APIS)]
+    assert valeurs == ["", "Microphone (Razer Seiren Mini U", "Microphone (WO Mic Device)"]   # sans le mappeur
+
+
+def test_liste_micros_garde_le_reglage():
+    from core import audio
+    liste = audio.liste_micros("WO Mic", NOMS_WINDOWS, MICROS, APIS)      # écrit à la main avant la liste
+    assert {"valeur": "WO Mic", "titre": "Microphone (WO Mic Device)"} in liste
+    liste = audio.liste_micros("Blue Yeti", NOMS_WINDOWS, MICROS, APIS)   # débranché : reste visible
+    assert liste[-1] == {"valeur": "Blue Yeti", "titre": "Blue Yeti (pas branché)"}
+
+
 def test_present_dans_windows_noms_coupes():
     noms = ["Haut-parleurs (JBL Flip Essenti", "Haut-parleurs (Razer BlackShark"]
     assert sortie._present("JBL", noms)
@@ -102,7 +142,7 @@ def test_reglages_par_defaut():
     from modules.parametres import REGLAGES
     lignes = {(s, c): t for s, c, t, _ in REGLAGES}
     assert lignes[("voix", "sortie")] == "texte"
-    assert lignes[("micro", "appareil")] == "texte"
+    assert lignes[("micro", "appareil")] == "choix"           # la liste des micros du PC
     assert lignes[("conversation", "delai_sortie_ms")] == "nombre"
 
 

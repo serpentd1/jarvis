@@ -102,6 +102,24 @@ class Jarvis:
                 self.lecteur.latence_micro = self.micro.flux.latency
                 self.lecteur.regler_anti_echo()
             self.mot = MotActivation(float(self.cfg["micro"]["seuil_activation"]))
+            self.ctx.changer_micro = self.changer_micro
+
+    def changer_micro(self, nom: str):
+        """Choisi dans la grande application : la boucle d'écoute passe sur ce micro dès son prochain tour."""
+        self.cfg["micro"]["appareil"] = nom
+        self._micro_demande = nom
+
+    def _appliquer_micro(self):
+        """Change de micro (dans la boucle d'écoute, jamais pendant qu'il écoute une phrase)."""
+        nom, self._micro_demande = self._micro_demande, None
+        try:
+            self.micro.changer(nom)
+        except Exception:  # noqa: BLE001
+            log.exception("Impossible de passer sur le micro « %s »", nom)
+            return
+        if self.lecteur is not None and self.micro.anti_echo is not None:
+            self.lecteur.latence_micro = self.micro.flux.latency
+            self.lecteur.regler_anti_echo()
 
     def _nouveau_lecteur(self, anti_echo=None):
         """Les haut-parleurs de Jarvis : `[voix] sortie` (ex. "JBL", vide = la sortie de Windows)."""
@@ -232,6 +250,10 @@ class Jarvis:
         micro_ouvert = False
         avant = deque(maxlen=int(2.0 * FREQ / BLOC))
         while not self.etat.quitter.is_set():
+            if self.micro and getattr(self, "_micro_demande", None) is not None:
+                self._appliquer_micro()
+                self.mot.reinitialiser()
+                avant.clear()
             if self.micro and self.etat.micro != micro_ouvert:
                 (self.micro.demarrer if self.etat.micro else self.micro.pause)()
                 micro_ouvert = self.etat.micro

@@ -28,6 +28,8 @@ pub const TABS: [&str; 18] = [
     "Animations de la grande appli",
 ];
 
+pub const NIVEAUX_IA: [&str; 3] = ["Complète", "Semi (légère)", "Coupée"];
+pub const BOUTON_IA: [&str; 3] = ["Au survol", "Toujours", "Caché"];
 pub const DEPARTS: [&str; 7] = ["Accueil", "Aujourd'hui", "Dernière page ouverte", "Jarvis", "Tâches", "Pronote", "Paramètres"];
 pub const FONDS: [&str; 7] = ["Comme l'île", "Plus sombre", "Plus clair", "Dégradé de l'accent", "Noir profond", "Bleu nuit", "Violet"];
 
@@ -91,6 +93,7 @@ pub fn opts() -> Vec<Opt> {
         b!(2, "Cacher l'île automatiquement", auto_hide),
         n!(2, "  après N s sans survol", auto_hide_secs, 0.0, 300.0, 5.0, "s"),
         n!(2, "  temps en haut de l'écran pour la faire revenir", reveal_secs, 0.1, 3.0, 0.1, "s"),
+        b!(2, "  laisser dépasser une petite languette", languette),
         b!(2, "Toujours ouverte", always_open),
         b!(2, "Ouvrir au clic plutôt qu'au survol", open_on_click),
         // 3 Texte
@@ -163,6 +166,8 @@ pub fn opts() -> Vec<Opt> {
         b!(8, "Non-lus Discord via le titre de Chrome", discord_title),
         b!(8, "Discord : afficher aussi les messages des serveurs", discord_servers),
         // 9 IA et Jarvis
+        ch!(9, "Niveau de l'IA", ia_niveau, &NIVEAUX_IA),
+        ch!(9, "Bouton IA dans la barre du haut", ia_bouton, &BOUTON_IA),
         ch!(9, "Modèle", ai_model, &MODELS),
         n!(9, "Mémoire (échanges retenus)", ai_history, 0.0, 10.0, 1.0, ""),
         b!(9, "Lui donner Pronote, mails, météo…", ai_context),

@@ -226,13 +226,34 @@ pub fn run_ile(out: &str) {
             status: "",
             info: Some(&pinfo),
         };
+        // île cachée toute seule : seulement la languette en haut de l'écran
+        if st.gone {
+            let Some((pm, x, y)) = island_draw::languette(&r) else { return };
+            let Some(mut desk) = IntSize::from_wh(sw as u32, sh as u32).and_then(|z| Pixmap::from_vec(full.clone(), z)) else { return };
+            desk.draw_pixmap(x, y, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            if let Some(crop) = IntRect::from_xywh(sw / 2 - 200, 0, 400, 60).and_then(|rr| desk.clone_rect(rr)) {
+                let _ = crop.save_png(out.join(format!("{name}.png")));
+            }
+            log.push_str(&format!("{name} : languette {}x{} px\n", pm.width(), pm.height()));
+            return;
+        }
         let t0 = Instant::now();
         let (mode, _, _) = island_draw::target(&r);
         let Some((pm, x, y, hits)) = island_draw::render(&r) else {
             log.push_str(&format!("{name} : échec du rendu\n"));
             return;
         };
-        log.push_str(&format!("{name} ({mode:?}) : {}x{} px, {} zones cliquables, {:?}\n", pm.width(), pm.height(), hits.len(), t0.elapsed()));
+        let froid = t0.elapsed();
+        // temps d'une image « à chaud » (lettres déjà en cache, comme pendant une animation)
+        crate::gfx::rendre(pm.clone());
+        let t1 = Instant::now();
+        for _ in 0..5 {
+            if let Some((p, ..)) = island_draw::render(&r) {
+                crate::gfx::rendre(p);
+            }
+        }
+        let chaud = t1.elapsed() / 5;
+        log.push_str(&format!("{name} ({mode:?}) : {}x{} px, {} zones cliquables, {froid:?} (à chaud : {chaud:?})\n", pm.width(), pm.height(), hits.len()));
         let Some(mut desk) = IntSize::from_wh(sw as u32, sh as u32).and_then(|z| Pixmap::from_vec(full.clone(), z)) else { return };
         desk.draw_pixmap(x, y, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
         let (x0, w) = ((x - 20).max(0), (pm.width() as i32 + 40).min(sw - (x - 20).max(0)));
@@ -365,6 +386,22 @@ pub fn run_ile(out: &str) {
         shot(&d, &format!("60_theme_{p}_{nom}_pilule"), &c2, &mk(false, View::Main), None, &jarvis_idle, &mut log);
         c2.ile.layout = 1;
         shot(&d, &format!("61_theme_{p}_{nom}_ouverte"), &c2, &mk(true, View::Main), None, &jarvis_idle, &mut log);
+    }
+    // 1.5 : bouton IA de la barre du haut (Complète, Semi, Coupée), cartes des nouveaux thèmes, languette
+    for (n, nom) in ["complete", "semi", "coupee"].iter().enumerate() {
+        let mut c3 = cfg.clone();
+        c3.ile.ia_bouton = 1;
+        c3.ile.ia_niveau = n;
+        shot(&d, &format!("80_bouton_ia_{nom}"), &c3, &mk(true, View::Main), None, &jarvis_idle, &mut log);
+    }
+    for p in [0usize, 19, 20, 21, 22] {
+        let mut c4 = cfg.clone();
+        c4.ile.preset = p;
+        shot(&d, &format!("81_cartes_theme_{p}"), &c4, &mk(true, View::Main), None, &jarvis_idle, &mut log);
+        let mut cache = mk(false, View::Main);
+        cache.gone = true;
+        cache.slide = 1.0;
+        shot(&d, &format!("82_languette_theme_{p}"), &c4, &cache, None, &jarvis_idle, &mut log);
     }
     // 1.4 : imprimante 3D (pilule pendant une impression, page de la grande appli avec et sans caméra)
     d.printer = crate::data::Printer {
